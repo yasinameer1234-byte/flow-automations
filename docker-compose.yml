@@ -1,0 +1,28 @@
+# Local development only. Nothing here is a production deployment.
+services:
+  api:
+    build: .
+    ports: ["127.0.0.1:8000:8000"]   # bound to localhost: no auth yet
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - flow-data:/home/flow/var
+
+  # Optional: self-hosted n8n for prototyping client workflows visually.
+  # Start with: docker compose --profile n8n up
+  # License: n8n Sustainable Use License. Fine for internal use and for building
+  # workflows for clients; NOT for reselling n8n itself as our hosted SaaS.
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:1.123.4
+    profiles: ["n8n"]
+    ports: ["127.0.0.1:5678:5678"]
+    environment:
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_SECURE_COOKIE=false
+    volumes:
+      - n8n-data:/home/node/.n8n
+
+volumes:
+  flow-data:
+  n8n-data:

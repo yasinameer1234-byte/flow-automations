@@ -1,0 +1,13 @@
+# Per-client policy. One file per client tenant. No secrets here.
+[tenant]
+id = "demo"
+company_name = "Demo Client Co (synthetic)"
+
+[policy]
+# Below this AI confidence, the item goes to a human review queue instead of being actioned.
+min_confidence = 0.70
+# Actions that must be approved by a human before they execute.
+approval_required = ["send_email", "issue_refund"]
+high_value_deal_threshold = 10000
+# If true, a templated support acknowledgement is sent without approval.
+auto_acknowledge_support = false
