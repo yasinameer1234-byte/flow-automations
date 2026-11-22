@@ -80,6 +80,9 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument(
         "--auto-approve", action="store_true", help="approve every pending action (demo only)"
     )
+    sv = sub.add_parser("serve", help="run the web app (dashboard, admin, browser call demo)")
+    sv.add_argument("--port", type=int, default=8000)
+    sv.add_argument("--host", default="127.0.0.1")
     sub.add_parser("approvals", help="list pending approvals")
     for name in ("approve", "reject"):
         s = sub.add_parser(name)
@@ -89,6 +92,13 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     if args.cmd == "demo":
         return cmd_demo(args)
+    if args.cmd == "serve":
+        import uvicorn
+
+        from .web.app import create_web_app
+
+        uvicorn.run(create_web_app(), host=args.host, port=args.port)
+        return 0
     if args.cmd == "approvals":
         return cmd_approvals(args)
     return cmd_decide(args, approve=args.cmd == "approve")

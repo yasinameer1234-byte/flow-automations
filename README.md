@@ -3,8 +3,8 @@
 The engine, integrations and demo workflows for Flow Automations, an AI automation services
 company that's growing into a SaaS platform.
 
-**Status: v0.1 foundation. Runs locally on synthetic data with simulated services. Not
-production-ready.** See [docs/05-real-vs-simulated.md](docs/05-real-vs-simulated.md).
+**Status: v0.2. AI Secretary browser demo, dashboard and admin panel run locally on synthetic
+data with simulated phone, SMS and calendar. Not production-ready.** See [docs/05-real-vs-simulated.md](docs/05-real-vs-simulated.md).
 
 ## What's here
 ```
@@ -12,14 +12,29 @@ src/flow/
   core/          engine, approvals, retries, audit log, DB schema, domain models
   ai/            classifier interface: simulated (rules) and Claude (structured output)
   integrations/  CRM, email and payments interfaces + local/simulated implementations
-  workflows/     inbound_triage: the demo workflow
+  workflows/     inbound_triage: the v0.1 triage workflow
+  secretary/     AI Secretary: tools, dialogue, availability, calls, metrics, seed data
+  web/           login, dashboard, admin, browser call demo, voice-agent tool endpoints
   api/           FastAPI HTTP API (local only, no auth yet)
   cli.py         `flow demo`, `flow approvals`, `flow approve|reject`
 config/tenants/  per-client policy files (no secrets)
 data/synthetic/  fictional test messages
-tests/           pytest suite (unit + workflow + HTTP end-to-end)
+tests/           pytest suite (unit + workflow + HTTP)
+e2e/             browser end-to-end test (Playwright)
 docs/            stack, architecture, costs, roadmap, secrets, test results, blockers
 ```
+
+## AI Secretary demo (v0.2)
+```bash
+FLOW_DEMO_PASSWORD=choose-a-local-password flow serve      # http://127.0.0.1:8000
+```
+- Call the synthetic plumbing company in the browser: http://127.0.0.1:8000/demo/northside
+  (type, or speak in Chrome)
+- Owner dashboard: sign in as `owner@northside.example`
+- Platform admin: sign in as `admin@flow.local`
+- End-to-end browser test: `BASE_URL=http://127.0.0.1:8000 FLOW_DEMO_PASSWORD=... node e2e/first_journey.js`
+
+See [docs/09-ai-secretary-demo.md](docs/09-ai-secretary-demo.md).
 
 ## Quick start
 ```bash
@@ -58,3 +73,4 @@ templates. The engine and components stay the same.
 6. [Secrets](docs/06-secrets.md)
 7. [Test results](docs/07-test-results.md)
 8. [Blockers and next actions](docs/08-blockers-and-next-actions.md)
+9. [AI Secretary demo](docs/09-ai-secretary-demo.md)

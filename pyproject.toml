@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flow-automations"
-version = "0.1.0"
+version = "0.2.0"
 description = "Flow Automations: reusable automation engine, integrations and demo workflows"
 requires-python = ">=3.11"
 dependencies = [
@@ -12,6 +12,8 @@ dependencies = [
   "fastapi>=0.110",
   "uvicorn>=0.29",
   "anthropic>=2.0",
+  "jinja2>=3.1",
+  "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +24,9 @@ flow = "flow.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+flow = ["web/templates/*.html", "web/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -37,3 +42,6 @@ ignore = ["S101"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Form", "fastapi.Header"]

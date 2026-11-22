@@ -20,6 +20,12 @@ jobs:
       - run: pytest
       - name: demo smoke test
         run: FLOW_RETRY_BASE_DELAY=0 flow demo
+      - name: browser end-to-end
+        run: |
+          npm install --no-save playwright@1.49.1 && npx playwright install --with-deps chromium
+          FLOW_DEMO_PASSWORD=ci-only-password FLOW_DB_PATH=/tmp/e2e.db flow serve --port 8100 &
+          sleep 5
+          BASE_URL=http://127.0.0.1:8100 FLOW_DEMO_PASSWORD=ci-only-password node e2e/first_journey.js
       - name: secret scan
         uses: gitleaks/gitleaks-action@v2
         env:

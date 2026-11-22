@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Flow Automations{% endblock %}</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+{% if user %}
+<header class="top">
+  <span class="brand">Flow Automations</span>
+  <nav>
+    {% if user.role == 'platform_admin' %}<a href="/admin">Admin</a>{% endif %}
+    {% if tenant %}
+    {% set q = '?tenant=' ~ tenant.id if user.role == 'platform_admin' else '' %}
+    <a href="/app{{ q }}">Dashboard</a>
+    <a href="/app/leads{{ q }}">Leads</a>
+    <a href="/demo/{{ tenant.slug }}" target="_blank">Try a call</a>
+    {% endif %}
+  </nav>
+  <span class="muted small">{{ user.name }} · {{ user.role.replace('_', ' ') }}</span>
+  <form method="post" action="/logout"><button type="submit">Sign out</button></form>
+</header>
+{% endif %}
+<main>
+<div class="notice">Demo environment: synthetic businesses and data, simulated phone, SMS and calendar. Nothing here reaches a real customer.</div>
+{% block body %}{% endblock %}
+</main>
+</body>
+</html>

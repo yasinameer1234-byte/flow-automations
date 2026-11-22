@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}{{ tenant.name }} · Dashboard{% endblock %}
+{% block body %}
+{% set q = '?tenant=' ~ tenant.id if user.role == 'platform_admin' else '' %}
+<h1>{{ tenant.name }}</h1>
+<p class="sub">Last {{ m.days }} days · {{ m.package.label }} · {% if open_now %}<span class="badge good">Open now</span>{% else %}<span class="badge">After hours: AI is answering</span>{% endif %}</p>
+
+<h2>Calls and leads</h2>
+<div class="grid">
+  <div class="tile"><div class="label">Incoming calls</div><div class="value" data-metric="calls_total">{{ m.calls_total }}</div></div>
+  <div class="tile"><div class="label">Answered</div><div class="value" data-metric="calls_answered">{{ m.calls_answered }}</div><div class="note">{{ m.after_hours_answered }} after hours</div></div>
+  <div class="tile"><div class="label">Missed</div><div class="value" data-metric="calls_missed">{{ m.calls_missed }}</div><div class="note">while the assistant was off</div></div>
+  <div class="tile"><div class="label">Qualified leads</div><div class="value" data-metric="qualified_leads">{{ m.qualified_leads }}</div></div>
+  <div class="tile"><div class="label">Appointments booked</div><div class="value" data-metric="appointments_booked">{{ m.appointments_booked }}</div></div>
+  <div class="tile"><div class="label">Handed to staff</div><div class="value">{{ m.handoffs }}</div><div class="note">transfers and callbacks</div></div>
+</div>
+
+<h2>Financial impact</h2>
+<div class="grid">
+  <div class="tile verified"><div class="label">Verified revenue <span class="badge good">confirmed</span></div><div class="value" data-metric="verified_revenue">{{ m.verified_revenue|money }}</div><div class="note">{{ m.jobs_won }} jobs marked won with a value</div></div>
+  <div class="tile verified"><div class="label">Verified ROI</div><div class="value">{{ m.verified_roi }}×</div><div class="note">verified revenue ÷ subscription</div></div>
+  <div class="tile estimated"><div class="label">Estimated revenue <span class="badge warn">estimate</span></div><div class="value">{{ m.estimated_revenue|money }}</div><div class="note">bookings × {{ m.assumptions.avg_job_value|money }} avg job × {{ (m.assumptions.close_rate*100)|round|int }}% close rate</div></div>
+  <div class="tile estimated"><div class="label">Estimated ROI <span class="badge warn">estimate</span></div><div class="value">{{ m.estimated_roi }}×</div></div>
+  <div class="tile estimated"><div class="label">Admin time avoided <span class="badge warn">estimate</span></div><div class="value">{{ m.hours_saved_estimate }} h</div><div class="note">{{ m.assumptions.minutes_saved_per_call|int }} min per answered call</div></div>
+  <div class="tile"><div class="label">Subscription cost</div><div class="value">{{ m.subscription_cost|money }}</div><div class="note">CAD for this period</div></div>
+</div>
+<p class="muted small">Lead values are never counted as revenue. Revenue is verified only when your team marks a job won with its value on the <a href="/app/leads{{ q }}">Leads</a> page.</p>
+
+<h2>Usage this month</h2>
+<div class="tile">
+  <div class="label">AI conversation minutes</div>
+  <div class="value">{{ m.minutes_used|int }} <span class="muted small">of {{ m.minutes_allowance }}</span></div>
+  <div class="meter" role="img" aria-label="{{ m.minutes_pct }}% of included minutes used"><span style="width: {{ [m.minutes_pct, 100]|min }}%"></span></div>
+  <div class="note">{{ m.minutes_pct }}% used · {{ m.messages_sent }} confirmation texts sent</div>
+</div>
+
+<div class="two">
+<div>
+<h2>Recent calls</h2>
+<div class="panel"><table>
+<thead><tr><th>When</th><th>Summary</th><th>Outcome</th></tr></thead>
+<tbody>
+{% for c in recent %}
+<tr><td class="small muted">{{ c.started_at|dt }}</td>
+<td><a href="/app/calls/{{ c.id }}{{ q }}">{{ c.summary or 'In progress' }}</a></td>
+<td><span class="badge {{ 'good' if c.outcome == 'booked' else 'bad' if c.outcome in ('disabled', 'emergency') else '' }}">{{ c.outcome or 'live' }}</span></td></tr>
+{% else %}<tr><td colspan="3" class="muted">No calls yet.</td></tr>{% endfor %}
+</tbody></table></div>
+</div>
+<div>
+<h2>Upcoming appointments</h2>
+<div class="panel"><table>
+<thead><tr><th>Time (local)</th><th>Customer</th><th>Service</th></tr></thead>
+<tbody>
+{% for a in upcoming %}
+<tr><td class="small">{{ a.starts_at|local(tz) }}</td><td>{{ a.customer_name }}<br><span class="muted small">{{ a.customer_phone|phone }}</span></td><td>{{ a.service }}</td></tr>
+{% else %}<tr><td colspan="3" class="muted">Nothing booked yet.</td></tr>{% endfor %}
+</tbody></table></div>
+<h2>Callbacks to make</h2>
+<div class="panel"><table><tbody>
+{% for t in tasks %}<tr><td>{% if t.kind == 'emergency_callback' %}<span class="badge bad">urgent</span> {% endif %}{{ t.title }}</td></tr>
+{% else %}<tr><td class="muted">No open callbacks.</td></tr>{% endfor %}
+</tbody></table></div>
+</div>
+</div>
+{% endblock %}

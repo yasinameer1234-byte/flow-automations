@@ -6,7 +6,8 @@
 | 1 | **No GitHub repository** | Code exists only in a local git repo. CI can't run and nothing is backed up | Create an empty private repo (suggested name `flow-automations`) under your account or org, connect GitHub to Claude, and say "push" |
 | 2 | **No AI API key approved** | The demo runs on keyword rules, not AI | Approve spend (about $0.0003–$0.013 per message; see 03) and set `ANTHROPIC_API_KEY` in a secret store. Never paste it in chat |
 | 3 | **Target market not chosen** | Categories, prompts, connectors and the first real integration depend on it | Business decision (with the ChatGPT plan) |
-| 4 | **Hosting not approved** | No staging environment | Approve roughly $10–75/month for Phase 1 infra when we have a pilot client |
+| 4 | **Retell + Canadian phone number** | Real phone calls (step 3 of the MVP sequence) | Your approval to open a Retell account (USD $10 free credit, then about $0.11/min) |
+| 5 | **Hosting not approved** | No staging environment | Approve roughly $10–75/month for Phase 1 infra when we have a pilot client |
 
 ## Next actions (engineering, no approval needed)
 1. Postgres support + migrations, keeping SQLite for tests.

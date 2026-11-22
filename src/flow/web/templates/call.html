@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Call {{ tenant.name }} · Demo{% endblock %}
+{% block body %}
+<div class="phone">
+  <h1>Call {{ tenant.name }}</h1>
+  <p class="sub">Browser demo of the AI Secretary. Speak (Chrome) or type. Synthetic business: no real calls, texts or bookings.</p>
+  <div class="call-card">
+    <div class="call-head">
+      <div><strong>{{ tenant.name }}</strong><div class="muted small" id="status">Not connected</div></div>
+      <div class="inline">
+        <label class="small inline"><input type="checkbox" id="voice" checked> Voice</label>
+        <button class="primary" id="call-btn" type="button">Start call</button>
+      </div>
+    </div>
+    <div class="transcript" id="transcript" aria-live="polite"></div>
+    <div class="call-foot">
+      <form id="say-form">
+        <input id="say" placeholder="Type what the caller says…" autocomplete="off" disabled aria-label="Caller message">
+        <button type="button" id="mic" disabled title="Speak">🎤</button>
+        <button type="submit" id="send" disabled>Send</button>
+      </form>
+      <div class="suggest" id="suggest">
+        <span class="muted small">Try:</span>
+        <button type="button">My kitchen sink is leaking</button>
+        <button type="button">My name is Sarah Chen</button>
+        <button type="button">416 555 0142</button>
+        <button type="button">Tomorrow morning</button>
+        <button type="button">The second one</button>
+        <button type="button">Yes</button>
+        <button type="button">How much is a service call?</button>
+      </div>
+    </div>
+  </div>
+  <p class="muted small" id="after"></p>
+</div>
+<script>window.FLOW_TENANT = {{ tenant.slug|tojson }};</script>
+<script src="/static/call.js"></script>
+{% endblock %}

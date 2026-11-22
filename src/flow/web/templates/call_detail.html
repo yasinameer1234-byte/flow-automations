@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Call · {{ tenant.name }}{% endblock %}
+{% block body %}
+<h1>Call {{ call.id }}</h1>
+<p class="sub">{{ call.started_at|dt }} · {{ call.channel.replace('_', ' ') }} · {{ call.billed_minutes or 0 }} billed min · <span class="badge">{{ call.outcome or 'live' }}</span></p>
+<p>{{ call.summary or '' }}</p>
+<div class="two">
+<div><h2>Transcript</h2><div class="panel"><table><tbody>
+{% for t in turns %}<tr><td class="small muted" style="width:70px">{{ t.speaker }}</td><td>{{ t.text }}</td></tr>
+{% else %}<tr><td class="muted">No transcript (synthetic history record).</td></tr>{% endfor %}
+</tbody></table></div></div>
+<div><h2>What the assistant did</h2><div class="panel"><table><tbody>
+{% for a in audit %}<tr><td class="small"><span class="badge {{ 'bad' if a.level == 'error' else 'warn' if a.level == 'warning' else '' }}">{{ a.event }}</span></td><td class="small muted">{{ a.detail }}</td></tr>
+{% else %}<tr><td class="muted">No tool calls recorded.</td></tr>{% endfor %}
+</tbody></table></div></div>
+</div>
+{% endblock %}

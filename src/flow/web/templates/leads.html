@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Leads · {{ tenant.name }}{% endblock %}
+{% block body %}
+<h1>Leads</h1>
+<p class="sub">{{ tenant.name }} · mark a job won with its real value to count it as verified revenue.</p>
+<div class="panel"><table>
+<thead><tr><th>Created</th><th>Name</th><th>Reason</th><th>Status</th><th class="num">Estimate</th><th class="num">Confirmed</th><th>Record outcome</th></tr></thead>
+<tbody>
+{% for l in leads %}
+<tr data-lead="{{ l.id }}">
+<td class="small muted">{{ l.created_at|dt }}</td>
+<td>{{ l.name or 'Unknown' }}<br><span class="muted small">{{ l.phone|phone }}</span></td>
+<td>{{ l.reason or '' }}{% if l.service %}<br><span class="muted small">{{ l.service }}</span>{% endif %}</td>
+<td><span class="badge {{ 'good' if l.status == 'won' else 'bad' if l.status == 'lost' else '' }}">{{ l.status }}</span></td>
+<td class="num muted">{{ l.estimated_value|money if l.estimated_value else '' }}</td>
+<td class="num">{{ l.confirmed_value|money if l.confirmed_value else '' }}</td>
+<td>{% if user.role != 'viewer' and l.status not in ('won', 'lost') %}
+<form method="post" action="/app/leads/{{ l.id }}/outcome" class="inline">
+<input type="hidden" name="csrf" value="{{ user.csrf }}">
+{% if user.role == 'platform_admin' %}<input type="hidden" name="tenant" value="{{ tenant.id }}">{% endif %}
+<input name="value" type="number" min="1" step="1" placeholder="Job value $" aria-label="Confirmed job value" style="width:120px">
+<button name="outcome" value="won" type="submit">Won</button>
+<button name="outcome" value="lost" type="submit" formnovalidate>Lost</button>
+</form>{% endif %}</td>
+</tr>
+{% else %}<tr><td colspan="7" class="muted">No leads yet.</td></tr>{% endfor %}
+</tbody></table></div>
+{% endblock %}

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Admin · Flow Automations{% endblock %}
+{% block body %}
+<h1>Platform admin</h1>
+<p class="sub">{{ rows|length }} customers · MRR {{ mrr|money }} CAD (from packages)</p>
+<div class="panel"><table>
+<thead><tr><th>Customer</th><th>Package</th><th class="num">Calls (30d)</th><th>Minutes this month</th><th class="num">Errors</th><th>Automations (kill switch)</th></tr></thead>
+<tbody>
+{% for r in rows %}
+<tr data-tenant="{{ r.t.id }}">
+<td><a href="/app?tenant={{ r.t.id }}">{{ r.t.name }}</a><br><span class="muted small">{{ r.t.slug }} · <a href="/demo/{{ r.t.slug }}" target="_blank">demo call</a></span></td>
+<td>{{ r.m.package.label }}<br><span class="muted small">{{ r.m.package.monthly_cad|money }}/mo</span></td>
+<td class="num">{{ r.m.calls_total }}</td>
+<td>{{ r.m.minutes_used|int }} / {{ r.m.minutes_allowance }}
+<div class="meter"><span style="width: {{ [r.m.minutes_pct, 100]|min }}%"></span></div>
+{% if r.m.minutes_pct >= 80 %}<span class="badge warn">{{ r.m.minutes_pct }}% used</span>{% endif %}</td>
+<td class="num">{% if r.failures %}<span class="badge bad">{{ r.failures }}</span>{% else %}0{% endif %}</td>
+<td>{% for a in r.automations %}
+<form method="post" action="/admin/tenants/{{ r.t.id }}/automations/{{ a.key }}" class="inline" style="margin-bottom:4px">
+<input type="hidden" name="csrf" value="{{ user.csrf }}">
+<input type="hidden" name="enabled" value="{{ '0' if a.enabled else '1' }}">
+<span class="small" style="min-width:150px">{{ a.key.replace('_', ' ') }}</span>
+<span class="badge {{ 'good' if a.enabled else 'bad' }}">{{ 'on' if a.enabled else 'off' }}</span>
+<button type="submit" class="{{ 'danger' if a.enabled else '' }}" data-toggle="{{ r.t.id }}-{{ a.key }}">{{ 'Disable' if a.enabled else 'Enable' }}</button>
+</form>{% endfor %}</td>
+</tr>{% endfor %}
+</tbody></table></div>
+
+<h2>Recent warnings and errors</h2>
+<div class="panel"><table>
+<thead><tr><th>When</th><th>Customer</th><th>Event</th><th>Detail</th></tr></thead>
+<tbody>
+{% for e in errors %}<tr><td class="small muted">{{ e.ts|dt }}</td><td class="small">{{ e.tenant_id }}</td><td><span class="badge warn">{{ e.event }}</span></td><td class="small muted">{{ e.detail_json[:160] }}</td></tr>
+{% else %}<tr><td colspan="4" class="muted">Nothing to review.</td></tr>{% endfor %}
+</tbody></table></div>
+{% endblock %}

@@ -1,4 +1,4 @@
-# 05 · What is real vs simulated (v0.1)
+# 05 · What is real vs simulated (v0.2)
 
 | Component | Status | Notes |
 |---|---|---|
@@ -18,6 +18,12 @@
 | Docker image | **Real** | Built locally (see 07) |
 | CI pipeline | **Written, not run** | Needs a GitHub repository |
 | n8n | **Config only** | Optional compose profile; not started or tested |
+| AI Secretary dialogue (browser demo) | **Real code, rule-based** | Deterministic slot filling; not an LLM. Production plan: LLM inside Retell calling our tools |
+| Availability, booking, cancel, reschedule | **Real (local calendar)** | Business hours minus bookings; Google/Microsoft calendars not connected |
+| Voice, phone numbers, call transfer | **Simulated** | Browser speech; transfers recorded, not dialled |
+| Confirmation SMS | **Simulated** | `messages` table |
+| Login, roles, tenant isolation, kill switch | **Real (MVP-grade)** | scrypt + signed cookie; move to hosted identity before self-serve |
+| Dashboard metrics | **Real, on synthetic data** | Verified revenue only from jobs marked won |
 | Deployment | **None** | Nothing is hosted anywhere |
 
 "Tests pass" means the logic is correct against simulated services. It does **not** mean
