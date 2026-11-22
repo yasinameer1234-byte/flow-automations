@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -29,6 +29,7 @@ from ..secretary.schema import PACKAGES
 from ..secretary.seed import seed
 from ..secretary.store import Store
 from ..secretary.tools import SecretaryTools, ToolError, format_phone
+from ..voice.retell import RetellWebhook, verify_signature
 from .auth import SESSION_COOKIE, SessionSigner, hash_password, verify_password
 
 HERE = Path(__file__).parent
@@ -375,9 +376,41 @@ def create_web_app(
             raise HTTPException(401, "invalid tenant key")
         return t["id"]
 
+    retell_key = os.environ.get("RETELL_API_KEY", "")
+    webhook = RetellWebhook(db, store, clock=clock)
+    audit = AuditLog(db, "platform")
+
+    async def retell_body(request: Request) -> dict:
+        """Read the body; when a Retell key is configured, require Retell's signature."""
+        raw = await request.body()
+        if retell_key and not verify_signature(
+            raw, request.headers.get("x-retell-signature"), retell_key
+        ):
+            audit.record("voice.bad_signature", level="warning", path=request.url.path)
+            raise HTTPException(401, "invalid signature")
+        try:
+            return json.loads(raw or b"{}")
+        except ValueError as e:
+            raise HTTPException(400, "invalid JSON") from e
+
+    @app.post("/voice/webhooks/retell/{slug}", status_code=204)
+    async def retell_webhook(slug: str, request: Request):
+        if not retell_key:
+            raise HTTPException(503, "RETELL_API_KEY is not configured")
+        payload = await retell_body(request)
+        tenant = store.tenant_by_slug(slug)
+        if not tenant:
+            raise HTTPException(404, "unknown business")
+        try:
+            result = webhook.handle(tenant["id"], payload)
+        except PermissionError as e:
+            raise HTTPException(403, str(e)) from e
+        audit.record("voice.webhook", retell_event=payload.get("event"), result=result)
+        return Response(status_code=204)
+
     @app.post("/voice/tools/{tool}")
     async def voice_tool(tool: str, request: Request, tenant_id: str = Depends(voice_tenant)):
-        body = await request.json()
+        body = await retell_body(request)
         args = body.get("args", {})
         call_ref = (body.get("call") or {}).get("call_id")
         tools = SecretaryTools(db, store, tenant_id, clock=clock)
@@ -393,19 +426,82 @@ def create_web_app(
                     call_id=call_ref,
                 )
             if tool == "book_appointment":
-                return tools.book_appointment(
+                booked = tools.book_appointment(
                     args["slot_id"],
                     args["name"],
                     args["phone"],
                     int(args["service_id"]),
                     call_id=call_ref,
                 )
+                # Same as the browser agent: every booking is also a qualified lead,
+                # and the caller gets a (simulated) transactional confirmation.
+                lead_id = tools.save_lead(
+                    name=args["name"],
+                    phone=args["phone"],
+                    reason=args.get("reason"),
+                    service_id=int(args["service_id"]),
+                    status="booked",
+                    qualified=True,
+                    call_id=call_ref,
+                )
+                db.execute(
+                    "UPDATE appointments SET lead_id = ? WHERE id = ? AND tenant_id = ?",
+                    (lead_id, booked["appointment_id"], tenant_id),
+                )
+                tools.send_confirmation(booked["appointment_id"], call_id=call_ref)
+                return {**booked, "lead_id": lead_id}
             if tool == "answer_question":
                 return tools.answer_question(args["question"], call_id=call_ref)
             if tool == "transfer_call":
                 return tools.transfer_call(
                     args.get("reason", ""), bool(args.get("emergency")), call_id=call_ref
                 )
+            if tool == "business_info":
+                from zoneinfo import ZoneInfo
+
+                prof = store.profile(tenant_id)
+                now = clock()
+                return {
+                    "business_name": store.tenant(tenant_id)["name"],
+                    "timezone": prof.timezone,
+                    "local_now": now.astimezone(ZoneInfo(prof.timezone)).strftime(
+                        "%A, %B %-d %Y, %-I:%M %p"
+                    ),
+                    "open_now": is_open(prof, now),
+                    "hours": prof.hours,
+                    "emergency_instructions": prof.emergency_instructions,
+                }
+            if tool == "list_services":
+                return {
+                    "services": [
+                        {
+                            "service_id": s["id"],
+                            "name": s["name"],
+                            "duration_minutes": s["duration_minutes"],
+                            "bookable": bool(s["bookable"]),
+                        }
+                        for s in store.services(tenant_id)
+                    ]
+                }
+            if tool == "request_callback":
+                lead_id = tools.save_lead(
+                    name=args.get("name"),
+                    phone=args["phone"],
+                    reason=args.get("reason"),
+                    service_id=args.get("service_id"),
+                    status="callback",
+                    qualified=bool(args.get("service_id")),
+                    call_id=call_ref,
+                )
+                urgent = bool(args.get("urgent"))
+                task_id = tools.create_task(
+                    "emergency_callback" if urgent else "callback",
+                    f"Call back {args.get('name') or 'caller'}: "
+                    f"{args.get('reason') or 'no reason given'}",
+                    lead_id,
+                    call_id=call_ref,
+                )
+                return {"lead_id": lead_id, "task_id": task_id, "urgent": urgent}
             if tool == "save_lead":
                 lead_id = tools.save_lead(
                     name=args.get("name"),
@@ -428,7 +524,7 @@ def create_web_app(
         return {
             "status": "ok",
             "tenants": len(store.tenants()),
-            "voice": "browser demo (simulated)",
+            "voice": "browser demo + Retell phone" if retell_key else "browser demo only",
             "messaging": "simulated",
         }
 
