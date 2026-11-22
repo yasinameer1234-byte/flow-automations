@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -72,6 +73,59 @@ def cmd_decide(args, approve: bool) -> int:
     return 0
 
 
+def cmd_check_config(args) -> int:
+    from .deploy import ConfigError, check_required, current_env, secret_status
+
+    try:
+        env = args.env or current_env()
+    except ConfigError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(f"Environment: {env}  (values are never shown)")
+    for row in secret_status(env):
+        if row["valid"]:
+            state = "ok"
+        elif row["set"]:
+            state = f"TOO SHORT (min {row['min_length']})"
+        else:
+            state = "MISSING" if row["required"] else "not set (optional here)"
+        print(f"  {row['name']:<22} {state:<26} {row['purpose']}")
+    try:
+        check_required(env)
+    except ConfigError as e:
+        print(f"\nNot ready: {e}", file=sys.stderr)
+        return 1
+    print("\nReady: every required secret is set.")
+    return 0
+
+
+def cmd_create_admin(args) -> int:
+    """Create a platform admin. The password is typed at a hidden prompt, never an argument."""
+    import getpass
+
+    from .core.db import Database
+    from .core.models import utcnow
+    from .secretary.store import Store
+    from .web.auth import hash_password
+
+    db = Database(os.environ.get("FLOW_DB_PATH", "var/flow.db"))
+    Store(db)  # creates the platform tables if needed
+    if db.one("SELECT id FROM users WHERE email = ?", (args.email,)):
+        print(f"error: {args.email} already exists", file=sys.stderr)
+        return 1
+    pw = getpass.getpass("New admin password (min 12 characters): ")
+    if len(pw) < 12 or pw != getpass.getpass("Repeat password: "):
+        print("error: passwords must match and be at least 12 characters", file=sys.stderr)
+        return 1
+    db.execute(
+        "INSERT INTO users (email, name, password_hash, role, tenant_id, created_at) "
+        "VALUES (?, ?, ?, 'platform_admin', NULL, ?)",
+        (args.email, args.name, hash_password(pw), utcnow()),
+    )
+    print(f"Created platform admin {args.email}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="flow")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -81,8 +135,13 @@ def main(argv: list[str] | None = None) -> int:
         "--auto-approve", action="store_true", help="approve every pending action (demo only)"
     )
     sv = sub.add_parser("serve", help="run the web app (dashboard, admin, browser call demo)")
-    sv.add_argument("--port", type=int, default=8000)
-    sv.add_argument("--host", default="127.0.0.1")
+    sv.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
+    sv.add_argument("--host", default=os.environ.get("FLOW_HOST", "127.0.0.1"))
+    cc = sub.add_parser("check-config", help="show which deployment secrets are set (no values)")
+    cc.add_argument("--env", choices=["local", "staging", "production"])
+    ca = sub.add_parser("create-admin", help="create a platform admin (password prompted)")
+    ca.add_argument("email")
+    ca.add_argument("--name", default="Platform Admin")
     sub.add_parser("approvals", help="list pending approvals")
     for name in ("approve", "reject"):
         s = sub.add_parser(name)
@@ -95,10 +154,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "serve":
         import uvicorn
 
+        from .deploy import ConfigError
         from .web.app import create_web_app
 
-        uvicorn.run(create_web_app(), host=args.host, port=args.port)
+        try:
+            web = create_web_app()
+        except ConfigError as e:
+            print(f"error: {e}\nRun `flow check-config` to see what is missing.", file=sys.stderr)
+            return 1
+        uvicorn.run(web, host=args.host, port=args.port, proxy_headers=True)
         return 0
+    if args.cmd == "check-config":
+        return cmd_check_config(args)
+    if args.cmd == "create-admin":
+        return cmd_create_admin(args)
     if args.cmd == "approvals":
         return cmd_approvals(args)
     return cmd_decide(args, approve=args.cmd == "approve")

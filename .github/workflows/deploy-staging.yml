@@ -1,0 +1,19 @@
+# Manual deploy to Fly.io staging (Toronto). Runs only when someone clicks "Run workflow".
+# Needs one repository secret: FLY_API_TOKEN (a Fly deploy token scoped to this app).
+# App secrets (FLOW_SECRET_KEY etc.) live in Fly, set with `fly secrets set`, not here.
+name: deploy-staging
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency: deploy-staging
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@1.5
+      - run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

@@ -1,0 +1,33 @@
+# Fly.io staging app, Toronto region. Synthetic data only until Postgres and backups exist.
+# Secrets are set with `fly secrets set` from your own terminal, never in this file.
+app = "flow-automations-staging"   # change if the name is taken
+primary_region = "yyz"
+
+[build]
+
+[env]
+  FLOW_ENV = "staging"
+  FLOW_DB_PATH = "/data/flow.db"
+  FLOW_LOG_LEVEL = "INFO"
+
+[mounts]
+  source = "flow_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "off"     # keep one machine warm: Retell tool calls cannot wait for a cold start
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "15s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

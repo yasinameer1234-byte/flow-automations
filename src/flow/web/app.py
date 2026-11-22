@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from ..core.audit import AuditLog, configure_logging
 from ..core.db import Database
+from ..deploy import check_required, current_env
 from ..secretary.availability import is_open
 from ..secretary.calls import CallError, CallService
 from ..secretary.metrics import tenant_metrics
@@ -81,6 +82,14 @@ def create_web_app(
     owner_password: str | None = None,
 ) -> FastAPI:
     configure_logging(os.environ.get("FLOW_LOG_LEVEL", "WARNING"), True)
+    env = current_env()
+    hosted = env != "local"
+    if hosted:
+        # Fail fast: a hosted instance must never use demo passwords or a random session key.
+        check_required(env)
+        secret = secret or os.environ["FLOW_SECRET_KEY"]
+    if env == "production":
+        seed_demo = False  # production holds real client data only, never synthetic tenants
     db = db or Database(os.environ.get("FLOW_DB_PATH", "var/flow.db"))
     clock = clock or (lambda: datetime.now(UTC))
     store = Store(db)
@@ -91,8 +100,10 @@ def create_web_app(
             password_hasher=hash_password,
             admin_password=admin_password or pw or "flow-demo-admin",
             owner_password=owner_password or pw or "flow-demo-owner",
+            northside_api_key=os.environ.get("FLOW_VOICE_TOOL_KEY") or "demo-northside-key",
             now=clock(),
         )
+    secure_cookies = hosted or os.environ.get("FLOW_SECURE_COOKIES") == "1"
     ctx = WebContext(db, store, CallService(db, store, clock=clock), SessionSigner(secret), clock)
 
     app = FastAPI(title="Flow Automations", version="0.2.0", docs_url="/api/docs")
@@ -167,7 +178,7 @@ def create_web_app(
             ctx.signer.dumps(user["id"]),
             httponly=True,
             samesite="lax",
-            secure=os.environ.get("FLOW_SECURE_COOKIES") == "1",
+            secure=secure_cookies,
             max_age=8 * 3600,
         )
         return resp
