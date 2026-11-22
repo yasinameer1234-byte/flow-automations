@@ -54,8 +54,10 @@ def test_owner_sees_own_dashboard_only(app):
 def test_tampered_cookie_is_rejected(app):
     c = login(app, "owner@northside.example")
     token = c.cookies.get("flow_session")
-    c.cookies.set("flow_session", token[:-2] + ("00" if token[-2:] != "00" else "11"))
-    assert c.get("/app", follow_redirects=False).status_code == 303
+    tampered = token[:-2] + ("00" if token[-2:] != "00" else "11")
+    c.cookies.clear()  # avoid two cookies with the same name and different domains
+    r = c.get("/app", headers={"cookie": f"flow_session={tampered}"}, follow_redirects=False)
+    assert r.status_code == 303
 
 
 def test_browser_call_creates_lead_visible_on_dashboard(app):
