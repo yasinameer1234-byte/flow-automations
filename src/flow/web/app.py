@@ -22,6 +22,8 @@ from pydantic import BaseModel
 from ..core.audit import AuditLog, configure_logging
 from ..core.db import Database
 from ..deploy import check_required, current_env
+from ..revenue.engine import RevenueEngine
+from ..revenue.playbooks import PLAYBOOKS
 from ..secretary.availability import is_open
 from ..secretary.calls import CallError, CallService
 from ..secretary.metrics import tenant_metrics
@@ -73,6 +75,11 @@ class TurnIn(BaseModel):
     text: str
 
 
+class SmsIn(BaseModel):
+    from_number: str
+    text: str
+
+
 def create_web_app(
     db: Database | None = None,
     *,
@@ -106,12 +113,14 @@ def create_web_app(
         )
     secure_cookies = hosted or os.environ.get("FLOW_SECURE_COOKIES") == "1"
     ctx = WebContext(db, store, CallService(db, store, clock=clock), SessionSigner(secret), clock)
+    revenue = RevenueEngine(db, store, clock=clock)
 
     app = FastAPI(title="Flow Automations", version="0.2.0", docs_url="/api/docs")
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.filters.update(money=_fmt_money, phone=_fmt_phone, dt=_fmt_dt, local=_fmt_local)
     app.state.ctx = ctx
+    app.state.revenue = revenue
 
     # ------------------------------------------------------------------ auth helpers
     def current_user(request: Request) -> dict | None:
@@ -287,6 +296,68 @@ def create_web_app(
         suffix = f"?tenant={tid}" if user["role"] == "platform_admin" else ""
         return RedirectResponse(f"/app/leads{suffix}", 303)
 
+    # ------------------------------------------------------------------ revenue engine
+    @app.get("/app/revenue", response_class=HTMLResponse, include_in_schema=False)
+    def revenue_page(
+        request: Request, tenant: str | None = None, user: dict = Depends(require_user)
+    ):
+        tid = resolve_tenant(user, tenant)
+        revenue.tick(tid)  # catch up on anything due before showing the page
+        enrollments = db.query(
+            "SELECT * FROM enrollments WHERE tenant_id = ? ORDER BY updated_at DESC LIMIT 25",
+            (tid,),
+        )
+        outbox = db.query(
+            "SELECT m.* FROM messages m WHERE m.tenant_id = ? AND m.purpose = 'follow_up' "
+            "ORDER BY m.id DESC LIMIT 15",
+            (tid,),
+        )
+        return render(
+            request,
+            "revenue.html",
+            user=user,
+            tenant=store.tenant(tid),
+            included=revenue.included(tid),
+            enabled=store.automation_enabled(tid, "revenue_engine"),
+            playbooks=revenue.playbook_status(tid),
+            r=revenue.results(tid),
+            enrollments=enrollments,
+            outbox=outbox,
+            settings=revenue.settings(tid),
+            labels={k: p.title for k, p in PLAYBOOKS.items()},
+            tz=store.profile(tid).timezone,
+        )
+
+    @app.post("/app/revenue/playbooks/{key}", include_in_schema=False)
+    def revenue_playbook(
+        key: str,
+        action: str = Form(...),
+        csrf: str = Form(""),
+        tenant: str | None = Form(None),
+        user: dict = Depends(require_user),
+    ):
+        check_csrf(user, csrf)
+        if user["role"] not in ("owner", "platform_admin"):
+            raise HTTPException(403, "only the business owner can approve messages")
+        tid = resolve_tenant(user, tenant)
+        if key not in PLAYBOOKS or action not in ("approve", "pause"):
+            raise HTTPException(404, "unknown playbook")
+        if not revenue.included(tid):
+            raise HTTPException(403, "the Revenue Engine is not in this package")
+        actor = f"user:{user['email']}"
+        if action == "approve":
+            revenue.approve(tid, key, actor)
+            revenue.tick(tid)  # enrol matching people right away; sends follow their delays
+        else:
+            revenue.revoke(tid, key, actor)
+        suffix = f"?tenant={tid}" if user["role"] == "platform_admin" else ""
+        return RedirectResponse(f"/app/revenue{suffix}", 303)
+
+    @app.post("/api/demo/{slug}/sms")
+    def demo_inbound_sms(slug: str, body: SmsIn):
+        """Simulated inbound text (a customer replying to a follow-up)."""
+        return revenue.inbound_sms(_demo_tenant(slug), body.from_number, body.text)
+
     @app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
     def admin(request: Request, user: dict = Depends(require_admin)):
         rows = []
@@ -317,7 +388,11 @@ def create_web_app(
         user: dict = Depends(require_admin),
     ):
         check_csrf(user, csrf)
-        if not store.tenant(tenant_id) or key not in ("ai_secretary", "booking_confirmations"):
+        if not store.tenant(tenant_id) or key not in (
+            "ai_secretary",
+            "booking_confirmations",
+            "revenue_engine",
+        ):
             raise HTTPException(404, "unknown automation")
         store.set_automation(tenant_id, key, enabled == "1", user["email"])
         AuditLog(db, tenant_id).record(

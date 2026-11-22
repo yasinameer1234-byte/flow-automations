@@ -109,7 +109,7 @@ class Store:
         )
 
     def automations(self, tenant_id: str) -> list[dict]:
-        keys = ["ai_secretary", "booking_confirmations"]
+        keys = ["ai_secretary", "booking_confirmations", "revenue_engine"]
         return [{"key": k, "enabled": self.automation_enabled(tenant_id, k)} for k in keys]
 
     # ------------------------------------------------------------------ usage

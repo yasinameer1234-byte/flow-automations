@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Revenue Engine · {{ tenant.name }}{% endblock %}
+{% block body %}
+{% set q = '?tenant=' ~ tenant.id if user.role == 'platform_admin' else '' %}
+<h1>Revenue Engine</h1>
+<p class="sub">{{ tenant.name }} · follow-ups that win back missed calls, cold leads and past customers. Nothing is sent until you approve the wording.</p>
+
+{% if not included %}
+<div class="panel" style="padding:16px"><strong>Not in your package.</strong> The Revenue Engine comes with Growth and Scale.</div>
+{% else %}
+{% if not enabled %}<div class="notice">The Revenue Engine is switched off for this business. Nothing will be sent.</div>{% endif %}
+
+<h2>Results, last {{ r.days }} days</h2>
+<div class="grid">
+  <div class="tile verified"><div class="label">Verified recovered revenue <span class="badge good">confirmed</span></div><div class="value" data-metric="verified_recovered">{{ r.verified_recovered_revenue|money }}</div><div class="note">{{ r.recovered_jobs_won }} jobs won that booked after a follow-up</div></div>
+  <div class="tile"><div class="label">Recovered bookings</div><div class="value" data-metric="recovered_bookings">{{ r.recovered_bookings }}</div><div class="note">booked after our first text</div></div>
+  <div class="tile estimated"><div class="label">Estimated recovered revenue <span class="badge warn">estimate</span></div><div class="value">{{ r.estimated_recovered_revenue|money }}</div><div class="note">recovered bookings × average job × close rate</div></div>
+  <div class="tile"><div class="label">Follow-ups sent</div><div class="value" data-metric="followups_sent">{{ r.messages_sent }}</div><div class="note">simulated texts</div></div>
+  <div class="tile"><div class="label">Active sequences</div><div class="value" data-metric="active_sequences">{{ r.active_sequences }}</div></div>
+  <div class="tile"><div class="label">Opt-outs</div><div class="value">{{ r.opt_outs }}</div><div class="note">never texted again</div></div>
+</div>
+<p class="muted small">A booking counts as recovered only if it was made after our first follow-up to that number. Revenue is verified only when a job is marked won with its value.</p>
+
+<h2>Playbooks</h2>
+{% for p in playbooks %}
+<div class="panel" style="padding:16px; margin-bottom:12px" data-playbook="{{ p.playbook.key }}">
+  <div class="inline" style="justify-content:space-between">
+    <div><strong>{{ p.playbook.title }}</strong>
+      {% if p.approved %}<span class="badge good">approved</span>{% elif p.stale %}<span class="badge warn">wording changed: approve again</span>{% else %}<span class="badge">waiting for your approval</span>{% endif %}
+    </div>
+    {% if user.role in ('owner', 'platform_admin') %}
+    <form method="post" action="/app/revenue/playbooks/{{ p.playbook.key }}" class="inline">
+      <input type="hidden" name="csrf" value="{{ user.csrf }}">
+      {% if user.role == 'platform_admin' %}<input type="hidden" name="tenant" value="{{ tenant.id }}">{% endif %}
+      {% if p.approved %}<button name="action" value="pause" type="submit">Pause</button>
+      {% else %}<button name="action" value="approve" type="submit">Approve and start</button>{% endif %}
+    </form>
+    {% endif %}
+  </div>
+  <p class="small muted" style="margin:6px 0">{{ p.playbook.why }} <br>When: {{ p.playbook.trigger }}</p>
+  <ol class="small" style="margin:6px 0 0 18px; padding:0">
+  {% for text in p.preview %}
+    {% set step = p.playbook.steps[loop.index0] %}
+    <li style="margin-bottom:6px"><span class="muted">{% if step.delay_minutes == 0 %}right away{% elif step.delay_minutes < 60 %}after {{ step.delay_minutes }} min{% elif step.delay_minutes < 1440 %}after {{ (step.delay_minutes / 60)|int }} h{% else %}after {{ (step.delay_minutes / 1440)|int }} day{{ 's' if step.delay_minutes >= 2880 }}{% endif %}:</span> “{{ text }}”</li>
+  {% endfor %}
+  </ol>
+  {% if p.approved_by %}<p class="small muted" style="margin:6px 0 0">Approved by {{ p.approved_by.replace('user:', '') }} on {{ p.approved_at|local(tz) }}</p>{% endif %}
+</div>
+{% endfor %}
+<p class="muted small">Rules on every text: only between {{ settings.send_start if settings else '09:00' }} and {{ settings.send_end if settings else '20:00' }} local time, never on Sundays, at most one follow-up per number per 20 hours, stops the moment someone books, replies or texts STOP, and only within Canada's implied-consent windows (6 months after an inquiry, 2 years after a job).</p>
+
+<div class="two">
+<div>
+<h2>Sequences</h2>
+<div class="panel"><table>
+<thead><tr><th>Who</th><th>Playbook</th><th>Status</th><th>Next</th></tr></thead>
+<tbody>
+{% for e in enrollments %}
+<tr><td>{{ e.name or 'Unknown' }}<br><span class="muted small">{{ e.phone|phone }}</span></td>
+<td class="small">{{ labels[e.playbook] }}</td>
+<td><span class="badge {{ 'good' if e.status == 'converted' else 'bad' if e.stop_reason == 'opted_out' else '' }}">{{ e.status }}</span>{% if e.stop_reason %}<br><span class="muted small">{{ e.stop_reason.replace('_', ' ') }}</span>{% endif %}</td>
+<td class="small muted">{% if e.status == 'active' %}{{ e.next_at|local(tz) }}{% endif %}</td></tr>
+{% else %}<tr><td colspan="4" class="muted">No sequences yet. Approve a playbook to start.</td></tr>{% endfor %}
+</tbody></table></div>
+</div>
+<div>
+<h2>Outbox <span class="badge warn">simulated</span></h2>
+<div class="panel"><table>
+<thead><tr><th>Sent</th><th>To</th><th>Message</th></tr></thead>
+<tbody>
+{% for m in outbox %}
+<tr><td class="small muted">{{ m.created_at|local(tz) }}</td><td class="small">{{ m.to_addr|phone }}</td><td class="small">{{ m.body }}</td></tr>
+{% else %}<tr><td colspan="3" class="muted">Nothing sent yet.</td></tr>{% endfor %}
+</tbody></table></div>
+</div>
+</div>
+{% endif %}
+{% endblock %}

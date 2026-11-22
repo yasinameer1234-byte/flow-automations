@@ -268,8 +268,15 @@ def seed(
             "VALUES (?, ?, ?, ?, ?, ?)",
             (email, name, password_hasher(pw), role, tid, utcnow()),
         )
+    from ..revenue.engine import RevenueEngine
+
+    # Revenue Engine settings (synthetic number and review link; Northside is on Growth).
+    RevenueEngine(db, store).configure(
+        NORTHSIDE, "4165550100", "https://example.com/review/northside-plumbing"
+    )
     if history:
         _history(db, store, now or datetime.now(UTC))
+        _revenue_history(db, store, now or datetime.now(UTC))
 
 
 _FIRST = [
@@ -407,3 +414,36 @@ def _history(db: Database, store: Store, now: datetime) -> None:
         )
         if mins:
             store.add_usage(NORTHSIDE, "voice_minutes", mins, ref=call_id, when=start)
+
+
+def _revenue_history(db: Database, store: Store, now: datetime) -> None:
+    """Synthetic material for the Revenue Engine demo: fresh missed calls, past customers."""
+    services = {s["name"]: s["id"] for s in store.services(NORTHSIDE)}
+    for i, (hours_ago, phone) in enumerate([(3, "4165550171"), (20, "6475550133")]):
+        start = (now - timedelta(hours=hours_ago)).replace(microsecond=0)
+        db.execute(
+            "INSERT INTO calls (id, tenant_id, channel, caller_number, started_at, ended_at, "
+            "duration_seconds, billed_minutes, after_hours, outcome, summary, state_json) "
+            "VALUES (?, ?, 'synthetic_history', ?, ?, ?, 0, 0, 1, 'abandoned', ?, '{}')",
+            (
+                f"call_missed{i}",
+                NORTHSIDE,
+                phone,
+                start.isoformat(),
+                (start + timedelta(seconds=20)).isoformat(),
+                "Caller hung up before speaking. (synthetic)",
+            ),
+        )
+    past = [
+        ("Nora Gagnon", "4165550191", "Water heater service", "Annual water heater flush", 360),
+        ("Hassan Ali", "4165550192", "Heating repair", "Furnace tune-up", 540),
+        ("Bea Tremblay", "6475550193", "Plumbing repair", "Replaced kitchen faucet", 290),
+    ]
+    for days_ago, (name, phone, svc, reason, value) in zip((355, 380, 410), past, strict=True):
+        when = (now - timedelta(days=days_ago)).replace(microsecond=0).isoformat()
+        db.execute(
+            "INSERT INTO leads (tenant_id, name, phone, reason, service_id, status, qualified, "
+            "estimated_value, confirmed_value, source, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 'won', 1, 650, ?, 'import', ?, ?)",
+            (NORTHSIDE, name, phone, reason, services[svc], value, when, when),
+        )

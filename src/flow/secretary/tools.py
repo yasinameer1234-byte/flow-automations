@@ -20,7 +20,6 @@ from zoneinfo import ZoneInfo
 
 from ..core.audit import AuditLog
 from ..core.db import Database
-from ..core.models import utcnow
 from .availability import Slot, available_slots, parse_slot_id
 from .store import Store
 
@@ -209,7 +208,7 @@ class SecretaryTools:
                     slot.id,
                     slot.end.strftime("%Y-%m-%dT%H:%M:%SZ"),
                     call_id,
-                    utcnow(),
+                    self.clock().isoformat(),
                 ),
             )
         except sqlite3.IntegrityError as e:  # double booking race: the DB is the referee
@@ -309,7 +308,7 @@ class SecretaryTools:
         call_id: str | None = None,
         lead_id: int | None = None,
     ) -> int:
-        now = utcnow()
+        now = self.clock().isoformat()
         est = self.profile.avg_job_value if qualified else None
         digits = normalize_phone(phone)
         if lead_id:
@@ -358,7 +357,7 @@ class SecretaryTools:
     ) -> int:
         cur = self.db.execute(
             "INSERT INTO tasks (tenant_id, kind, title, lead_id, created_at) VALUES (?,?,?,?,?)",
-            (self.tenant_id, kind, title, lead_id, utcnow()),
+            (self.tenant_id, kind, title, lead_id, self.clock().isoformat()),
         )
         self.audit.record("tool.create_task", run_id=call_id, kind=kind, task_id=cur.lastrowid)
         return int(cur.lastrowid)
@@ -385,7 +384,14 @@ class SecretaryTools:
         self.db.execute(
             "INSERT INTO messages (tenant_id, channel, to_addr, body, purpose, status, "
             "related_appointment_id, created_at) VALUES (?, 'sms', ?, ?, 'transactional', ?, ?, ?)",
-            (self.tenant_id, appt["customer_phone"], body, status, appointment_id, utcnow()),
+            (
+                self.tenant_id,
+                appt["customer_phone"],
+                body,
+                status,
+                appointment_id,
+                self.clock().isoformat(),
+            ),
         )
         if status == "sent_simulated":
             self.store.add_usage(self.tenant_id, "sms", 1, ref=str(appointment_id))

@@ -73,6 +73,33 @@ def cmd_decide(args, approve: bool) -> int:
     return 0
 
 
+def _start_revenue_loop(engine, every_seconds: int = 60) -> None:
+    """Run the Revenue Engine for every business once a minute, in the background."""
+    import threading
+    import time
+
+    def loop() -> None:
+        while True:
+            try:
+                engine.tick_all()
+            except Exception as e:  # keep the loop alive; the error is logged, not swallowed
+                print(f"revenue tick failed: {e}", file=sys.stderr)
+            time.sleep(every_seconds)
+
+    if os.environ.get("FLOW_REVENUE_LOOP", "1") != "0":
+        threading.Thread(target=loop, name="revenue-engine", daemon=True).start()
+
+
+def cmd_revenue_tick(args) -> int:
+    from .core.db import Database
+    from .revenue.engine import RevenueEngine
+    from .secretary.store import Store
+
+    db = Database(os.environ.get("FLOW_DB_PATH", "var/flow.db"))
+    print(json.dumps(RevenueEngine(db, Store(db)).tick_all(), indent=2))
+    return 0
+
+
 def cmd_check_config(args) -> int:
     from .deploy import ConfigError, check_required, current_env, secret_status
 
@@ -142,6 +169,7 @@ def main(argv: list[str] | None = None) -> int:
     ca = sub.add_parser("create-admin", help="create a platform admin (password prompted)")
     ca.add_argument("email")
     ca.add_argument("--name", default="Platform Admin")
+    sub.add_parser("revenue-tick", help="run the Revenue Engine once for every business")
     sub.add_parser("approvals", help="list pending approvals")
     for name in ("approve", "reject"):
         s = sub.add_parser(name)
@@ -162,8 +190,11 @@ def main(argv: list[str] | None = None) -> int:
         except ConfigError as e:
             print(f"error: {e}\nRun `flow check-config` to see what is missing.", file=sys.stderr)
             return 1
+        _start_revenue_loop(web.state.revenue)
         uvicorn.run(web, host=args.host, port=args.port, proxy_headers=True)
         return 0
+    if args.cmd == "revenue-tick":
+        return cmd_revenue_tick(args)
     if args.cmd == "check-config":
         return cmd_check_config(args)
     if args.cmd == "create-admin":
