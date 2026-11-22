@@ -1,0 +1,25 @@
+# Render Blueprint: free demo/staging instance. Synthetic data only.
+# Free tier: no card needed, sleeps after 15 minutes idle (about 1 minute to wake),
+# and the disk resets on every restart, which simply reseeds the demo businesses.
+# Secrets: Render generates the random ones; RETELL_API_KEY is entered once in the dashboard.
+services:
+  - type: web
+    name: flow-automations-demo
+    runtime: docker
+    plan: free
+    region: ohio
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: FLOW_ENV
+        value: staging
+      - key: FLOW_DB_PATH
+        value: /home/flow/var/flow.db
+      - key: FLOW_SECRET_KEY
+        generateValue: true
+      - key: FLOW_VOICE_TOOL_KEY
+        generateValue: true
+      - key: FLOW_DEMO_PASSWORD
+        generateValue: true
+      - key: RETELL_API_KEY
+        sync: false

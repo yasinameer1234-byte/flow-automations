@@ -408,9 +408,23 @@ def create_web_app(
         audit.record("voice.webhook", retell_event=payload.get("event"), result=result)
         return Response(status_code=204)
 
+    @app.post("/voice/{slug}/tools/{tool}")
+    async def retell_tool(slug: str, tool: str, request: Request):
+        """Retell-native route: the business comes from the URL, trust from Retell's signature."""
+        if not retell_key:
+            raise HTTPException(503, "RETELL_API_KEY is not configured")
+        body = await retell_body(request)
+        tenant = store.tenant_by_slug(slug)
+        if not tenant or tenant["status"] != "active":
+            raise HTTPException(404, "unknown business")
+        return run_tool(tenant["id"], tool, body)
+
     @app.post("/voice/tools/{tool}")
     async def voice_tool(tool: str, request: Request, tenant_id: str = Depends(voice_tenant)):
         body = await retell_body(request)
+        return run_tool(tenant_id, tool, body)
+
+    def run_tool(tenant_id: str, tool: str, body: dict):
         args = body.get("args", {})
         call_ref = (body.get("call") or {}).get("call_id")
         tools = SecretaryTools(db, store, tenant_id, clock=clock)

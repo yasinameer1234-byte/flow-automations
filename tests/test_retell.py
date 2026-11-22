@@ -191,3 +191,12 @@ def test_webhook_disabled_without_key(monkeypatch):
     )
     r = TestClient(app).post("/voice/webhooks/retell/northside", json={})
     assert r.status_code == 503
+
+
+def test_retell_native_route_uses_signature_not_bearer(env):
+    c, _ = env
+    body = {"name": "list_services", "args": {}, "call": {"call_id": "rc_9"}}
+    ok = signed(c, "/voice/northside/tools/list_services", body)
+    assert ok.status_code == 200 and ok.json()["services"]
+    assert signed(c, "/voice/northside/tools/list_services", body, key="bad").status_code == 401
+    assert signed(c, "/voice/nobody/tools/list_services", body).status_code == 404
