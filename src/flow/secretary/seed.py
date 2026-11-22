@@ -40,8 +40,8 @@ def api_key_hash(key: str) -> str:
 
 def _tenant(db, tid, slug, name, package, api_key):
     db.execute(
-        "INSERT INTO tenants (id, slug, name, package, api_key_hash, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO tenants (id, slug, name, package, api_key_hash, is_demo, created_at) "
+        "VALUES (?, ?, ?, ?, ?, 1, ?)",
         (tid, slug, name, package, api_key_hash(api_key), utcnow()),
     )
 

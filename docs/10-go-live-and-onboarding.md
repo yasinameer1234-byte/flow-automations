@@ -60,7 +60,9 @@ Onboarding checklist per client (after payment):
 1. Written authorisation to answer their calls and handle their customers' details.
 2. Business profile: hours, services and durations, service area, approved answers (fees,
    warranties, payment), emergency rules, on-call person.
-3. Create the tenant, load the profile, run `scripts/retell_setup.py --slug <client> --trade <trade>`.
+3. Copy `config/clients/example-plumbing.toml`, fill in the client's facts, check it with
+   `flow create-tenant <file> --check`, then run `flow create-tenant <file>` (owner password is
+   prompted, never stored in the file). Then `scripts/retell_setup.py --slug <client> --trade <trade>`.
 4. Buy the client's Retell forwarding number (approved spend, about USD $2/month).
 5. Test with web calls, then a real call from a cell phone, then turn on forwarding.
 6. Confirm recording/AI disclosure wording and the booking-confirmation text.
@@ -71,3 +73,13 @@ Onboarding checklist per client (after payment):
   need a separate provider (a paid step).
 - SQLite → Postgres, backups and monitoring before any real client data.
 - Calendar sync (Google Calendar / Jobber) is not built; bookings live in our database.
+
+## Launch-audit fixes (2026-11-22)
+| Audit finding | Fix |
+|---|---|
+| Public demo page worked for every business; no rate limits | Demo page and demo APIs only exist for businesses marked as demo (synthetic). Real clients get 404. Demo calls: 10 per address per hour, 300 per day per business; demo messages 120 per 10 min |
+| Login had no lockout | 5 failed attempts per account or 20 per address in 15 minutes → locked for 15 minutes (HTTP 429), logged |
+| No way to create a real client without code | `flow create-tenant <profile.toml>`: validated profile, one transaction, owner password prompted |
+| Name misread ("it's making a noise" → "Making") and question loops | "it's / I'm …" only counts as a name when we just asked for one; questions and goodbyes are handled while collecting details; hours answered from the profile |
+| Bot promised texts and live transfers that are simulated | Callers are never told a text is coming while SMS is simulated, and never told they're being connected unless `FLOW_LIVE_TRANSFER=1`. Emergencies become an urgent callback for the named on-call person |
+| "Missed calls" counted only calls while the assistant was off | Now counts hang-ups too |

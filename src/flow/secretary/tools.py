@@ -12,6 +12,7 @@ policies:
 
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 from collections.abc import Callable
@@ -95,6 +96,10 @@ class SecretaryTools:
         return next(s for s in self.store.services(self.tenant_id) if s["bookable"])
 
     def answer_question(self, question: str, call_id: str | None = None) -> dict:
+        hours = self._hours_answer(question)
+        if hours:  # built from the business profile, never invented
+            self.audit.record("tool.answer_question", run_id=call_id, matched=True, entry_id=None)
+            return {"answer": hours, "entry_id": None}
         q = set(_WORD.findall(question.lower())) - _STOP
         best, score = None, 0
         for e in self.store.knowledge(self.tenant_id, approved_only=True):
@@ -111,6 +116,35 @@ class SecretaryTools:
             "answer": best["answer"] if best else None,
             "entry_id": best["id"] if best else None,
         }
+
+    _HOURS_Q = re.compile(
+        r"\b(hours|open|close|closed|weekends?|saturdays?|sundays?|what time)\b", re.I
+    )
+
+    def _hours_answer(self, question: str) -> str | None:
+        if not self._HOURS_Q.search(question):
+            return None
+        names = {
+            "mon": "Monday",
+            "tue": "Tuesday",
+            "wed": "Wednesday",
+            "thu": "Thursday",
+            "fri": "Friday",
+            "sat": "Saturday",
+            "sun": "Sunday",
+        }
+
+        def fmt(h: str) -> str:
+            hh, mm = (int(x) for x in h.split(":"))
+            suffix = "AM" if hh < 12 else "PM"
+            hh = hh % 12 or 12
+            return f"{hh}:{mm:02d} {suffix}" if mm else f"{hh} {suffix}"
+
+        parts = []
+        for key, day in names.items():
+            span = self.profile.hours.get(key)
+            parts.append(f"{day} {fmt(span[0])} to {fmt(span[1])}" if span else f"{day} closed")
+        return "Our hours are " + ", ".join(parts) + "."
 
     # ------------------------------------------------------------------ availability
     def check_availability(
@@ -287,13 +321,18 @@ class SecretaryTools:
             )
             return {"transferred": False}
         target = staff[0]
+        live = os.environ.get("FLOW_LIVE_TRANSFER") == "1"
         self.audit.record(
             "tool.transfer_call",
             run_id=call_id,
             to=target["name"],
             emergency=emergency,
-            simulated=True,
+            live=live,
         )
+        if not live:
+            # No phone line can ring anyone yet, so never tell the caller they're being
+            # connected. The caller is told the truth: an urgent callback is flagged.
+            return {"transferred": False, "on_call": target["name"], "mode": "urgent_callback"}
         return {"transferred": True, "to": target["name"]}
 
     def save_lead(
@@ -376,11 +415,12 @@ class SecretaryTools:
             f"{tenant['name']}: your appointment is confirmed for {slot.label()}. "
             f"Reply C to cancel. Reply STOP to opt out."
         )
-        status = (
-            "sent_simulated"
-            if self.store.automation_enabled(self.tenant_id, "booking_confirmations")
-            else "suppressed"
-        )
+        # No SMS provider is connected yet: the text is written to the outbox only and the
+        # caller receives nothing, so callers are never told a text is coming.
+        if not self.store.automation_enabled(self.tenant_id, "booking_confirmations"):
+            status = "suppressed"
+        else:
+            status = "sent_simulated"
         self.db.execute(
             "INSERT INTO messages (tenant_id, channel, to_addr, body, purpose, status, "
             "related_appointment_id, created_at) VALUES (?, 'sms', ?, ?, 'transactional', ?, ?, ?)",

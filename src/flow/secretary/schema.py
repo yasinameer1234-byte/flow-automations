@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS tenants (
     package TEXT NOT NULL,              -- starter | growth | scale
     status TEXT NOT NULL DEFAULT 'active',
     api_key_hash TEXT,
+    is_demo INTEGER NOT NULL DEFAULT 0,  -- synthetic demo business: public demo page allowed
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS users (

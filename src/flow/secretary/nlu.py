@@ -71,7 +71,8 @@ _HUMAN = re.compile(
 _BOOK = re.compile(
     r"\b(book|booking|appointment|schedule|come (out|by|over)|send someone|"
     r"someone (to|come)|visit|available|availability|opening|quote|estimate|"
-    r"fix|repair|install|replace|look at|service call|technician|tech)\b",
+    r"fix|repair|install|replace|look at|service call|technician|tech|"
+    r"plumber|electrician|hvac guy|someone out)\b",
     re.I,
 )
 _CANCEL = re.compile(r"\b(cancel)\b", re.I)
@@ -132,6 +133,105 @@ _NOT_NAME = {
 }
 
 
+# Everyday words that are never a caller's name (on top of _NOT_NAME).
+_COMMON = {
+    "thanks",
+    "thank",
+    "bye",
+    "goodbye",
+    "ok",
+    "okay",
+    "yes",
+    "yeah",
+    "no",
+    "nope",
+    "what",
+    "how",
+    "when",
+    "where",
+    "why",
+    "who",
+    "do",
+    "does",
+    "can",
+    "could",
+    "would",
+    "will",
+    "is",
+    "are",
+    "you",
+    "guys",
+    "weekends",
+    "weekend",
+    "today",
+    "tomorrow",
+    "price",
+    "cost",
+    "much",
+    "charge",
+    "fix",
+    "leak",
+    "leaky",
+    "tap",
+    "furnace",
+    "heat",
+    "heating",
+    "water",
+    "heater",
+    "noise",
+    "weird",
+    "broken",
+    "urgent",
+    "emergency",
+    "help",
+    "someone",
+    "somebody",
+    "it",
+    "that",
+    "this",
+    "there",
+    "they",
+    "we",
+    "i",
+    "me",
+    "us",
+    "for",
+    "to",
+    "of",
+    "in",
+    "on",
+    "at",
+    "be",
+    "been",
+    "still",
+    "again",
+    "too",
+    "also",
+    "really",
+    "very",
+    "pretty",
+    "kind",
+    "basement",
+    "kitchen",
+    "sink",
+    "toilet",
+    "drain",
+    "pipe",
+    "pipes",
+    "ac",
+    "air",
+    "booked",
+    "book",
+    "appointment",
+    "visit",
+    "quote",
+    "estimate",
+    "morning",
+    "afternoon",
+    "evening",
+}
+
+
 def is_yes(t: str) -> bool:
     return bool(_YES.search(t)) and not re.search(r"\b(no|not)\b", t, re.I)
 
@@ -185,25 +285,46 @@ def extract_phone(t: str) -> str | None:
     return digits if len(digits) == 10 else None
 
 
+_STRONG_NAME = re.compile(
+    r"\b(?:my name is|my name's|name is|the name is|you can call me|call me)\s+"
+    r"([a-z][a-z'\-]+(?:\s+[a-z][a-z'\-]+)?)",
+    re.I,
+)
+# "it's ..." / "i'm ..." usually introduce a name only when we just asked for one:
+# "it's making a weird noise" and "i'm calling about" are not names.
+_WEAK_NAME = re.compile(
+    r"\b(?:this is|it's|it is|i'm|i am)\s+([a-z][a-z'\-]+(?:\s+[a-z][a-z'\-]+)?)", re.I
+)
+_FILLER = {"um", "uh", "yeah", "sure", "it's", "its", "and", "please", "oh", "well", "so"}
+
+
+def _looks_like_word(w: str) -> bool:
+    lw = w.lower()
+    return lw in _NOT_NAME or lw in _COMMON or lw.endswith("ing") or lw.endswith("ly")
+
+
+_INTRO_NAME = re.compile(
+    r"\b(?:this is|it's|it is)\s+([a-z][a-z'\-]+(?:\s+[a-z][a-z'\-]+)?)\s+"
+    r"(?:calling|speaking|here)\b",
+    re.I,
+)
+
+
 def extract_name(t: str, expecting: bool = False) -> str | None:
-    m = re.search(
-        r"\b(?:my name is|my name's|name is|this is|it's|it is|i'm|i am)\s+"
-        r"([a-z][a-z'\-]+(?:\s+[a-z][a-z'\-]+)?)",
-        t,
-        re.I,
-    )
-    candidate = m.group(1) if m else (t if expecting else None)
-    if not candidate:
+    m = _STRONG_NAME.search(t) or _INTRO_NAME.search(t)
+    if not m and expecting:
+        m = _WEAK_NAME.search(t)
+    if m:
+        candidate = m.group(1)
+    elif expecting and len(t.split()) <= 4 and not is_question(t):
+        candidate = t
+    else:
         return None
     candidate = re.sub(r"[^a-zA-Z'\-\s]", " ", candidate)
-    words = [
-        w
-        for w in candidate.split()
-        if w.lower() not in {"um", "uh", "yeah", "sure", "it's", "its", "and", "please"}
-    ]
-    if not words or len(words) > 3 or words[0].lower() in _NOT_NAME:
+    words = [w for w in candidate.split() if w.lower() not in _FILLER]
+    if not words or len(words) > 3 or _looks_like_word(words[0]):
         return None
-    words = [w for w in words if w.lower() not in _NOT_NAME][:2]
+    words = [w for w in words if not _looks_like_word(w)][:2]
     if not words:
         return None
     return " ".join(w[:1].upper() + w[1:].lower() for w in words)

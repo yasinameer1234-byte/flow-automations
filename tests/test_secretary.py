@@ -151,11 +151,32 @@ def test_only_approved_answers(env):
     assert "DRAFT" not in replies[1]
 
 
-def test_emergency_transfers_to_on_call(env):
+def test_emergency_flags_urgent_callback_and_never_fakes_a_transfer(env):
+    db, _, calls, _ = env
+    cid, replies = talk(
+        calls, ["Help, a pipe burst and there's water everywhere", "Ana Ruiz", "4165550150", "no"]
+    )
+    assert "connecting you" not in replies[1].lower()
+    assert "urgent for Mike Alvarez" in replies[1]
+    assert calls.get(NORTHSIDE, cid)["outcome"] == "emergency"
+    task = db.one("SELECT * FROM tasks WHERE tenant_id = ?", (NORTHSIDE,))
+    assert task["kind"] == "emergency_callback"
+
+
+def test_live_transfer_only_when_enabled(env, monkeypatch):
     _, _, calls, _ = env
+    monkeypatch.setenv("FLOW_LIVE_TRANSFER", "1")
     cid, replies = talk(calls, ["Help, a pipe burst and there's water everywhere"])
     assert "connecting you to Mike Alvarez" in replies[1]
-    assert calls.get(NORTHSIDE, cid)["outcome"] == "emergency"
+
+
+def test_no_promise_of_a_text_while_sms_is_simulated(env):
+    _, _, calls, _ = env
+    _, replies = talk(
+        calls, ["I need my furnace repaired", "Lee Park", "4165550170", "tomorrow", "first", "yes"]
+    )
+    assert any("You're booked" in r for r in replies)
+    assert not any("text" in r.lower() for r in replies)
 
 
 def test_emergency_with_nobody_available_creates_urgent_callback(env):
@@ -165,7 +186,7 @@ def test_emergency_with_nobody_available_creates_urgent_callback(env):
         calls, ["I smell gas in the basement", "Ana Ruiz", "4165550150", "no thanks"]
     )
     assert "leave the building" in replies[1]
-    assert "within minutes" in replies[3]
+    assert "urgent callback" in replies[3]
     task = db.one("SELECT * FROM tasks WHERE tenant_id = ?", (NORTHSIDE,))
     assert task["kind"] == "emergency_callback" and task["title"].startswith("URGENT")
 
@@ -176,7 +197,7 @@ def test_human_request_without_staff_takes_message(env):
     cid, replies = talk(
         calls, ["Can I speak to a real person?", "Tom Reed", "416-555-0160", "that's all"]
     )
-    assert "Everyone's busy" in replies[1]
+    assert "can't put you through live" in replies[1]
     assert calls.get(NORTHSIDE, cid)["outcome"] == "callback"
 
 
@@ -287,13 +308,55 @@ def test_availability_respects_part_of_day(env):
     "text,expected",
     [
         ("my name is sarah chen", "Sarah Chen"),
-        ("it's Dave", "Dave"),
-        ("I'm looking for help", None),
         ("This is Priya Raman calling", "Priya Raman"),
+        ("I'm looking for help", None),
+        # audit regression: a description is not a name when we didn't ask for one
+        ("I need someone to look at my furnace, it's making a weird noise", None),
+        ("I'm calling about my sink", None),
     ],
 )
 def test_extract_name(text, expected):
     assert nlu.extract_name(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("it's Dave", "Dave"),
+        ("Priya Shah", "Priya Shah"),
+        ("Do you guys do weekends", None),
+        ("ok thanks bye", None),
+        ("it's making a weird noise", None),
+    ],
+)
+def test_extract_name_when_asked(text, expected):
+    assert nlu.extract_name(text, expecting=True) == expected
+
+
+def test_off_script_audit_calls(env):
+    """Transcripts from the launch audit: wrong name, skipped price question, no way out."""
+    db, store, calls, _ = env
+    r = calls.start(NORTHSIDE)
+    cid = r["call_id"]
+    reply = calls.turn(
+        NORTHSIDE, cid, "I need someone to look at my furnace, it's making a weird noise"
+    )["reply"]
+    assert "Making" not in reply and "name" in reply.lower()
+    calls.turn(NORTHSIDE, cid, "Priya Shah")
+    state = db.one("SELECT state_json FROM calls WHERE id = ?", (cid,))["state_json"]
+    assert '"name": "Priya Shah"' in state
+
+    r = calls.start(NORTHSIDE)
+    reply = calls.turn(NORTHSIDE, r["call_id"], "How much do you charge to fix a leaky tap?")
+    assert "$129" in reply["reply"] or "won't guess" in reply["reply"]
+
+    r = calls.start(NORTHSIDE)
+    cid = r["call_id"]
+    calls.turn(NORTHSIDE, cid, "I need a plumber")
+    reply = calls.turn(NORTHSIDE, cid, "Do you guys do weekends")["reply"]
+    assert "name" in reply.lower() and reply != "Sorry, could I get your first and last name?"
+    out = calls.turn(NORTHSIDE, cid, "ok thanks bye")
+    assert out["ended"] is True
 
 
 def test_extract_phone_and_day():

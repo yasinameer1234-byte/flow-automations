@@ -33,6 +33,7 @@ from ..secretary.store import Store
 from ..secretary.tools import SecretaryTools, ToolError, format_phone
 from ..voice.retell import RetellWebhook, verify_signature
 from .auth import SESSION_COOKIE, SessionSigner, hash_password, verify_password
+from .ratelimit import RateLimiter
 
 HERE = Path(__file__).parent
 
@@ -122,6 +123,18 @@ def create_web_app(
     app.state.ctx = ctx
     app.state.revenue = revenue
 
+    # ------------------------------------------------------------------ abuse limits
+    login_email_limit = RateLimiter(5, 15 * 60)  # failed logins per account
+    login_ip_limit = RateLimiter(20, 15 * 60)  # failed logins per address
+    demo_call_limit = RateLimiter(10, 3600)  # demo calls per address per hour
+    demo_turn_limit = RateLimiter(120, 600)  # demo messages per address per 10 minutes
+    demo_sms_limit = RateLimiter(20, 3600)
+    demo_daily_limit = RateLimiter(int(os.environ.get("FLOW_DEMO_CALLS_PER_DAY", "300")), 86400)
+    app.state.limits = (login_email_limit, login_ip_limit, demo_call_limit, demo_daily_limit)
+
+    def client_ip(request: Request) -> str:
+        return request.client.host if request.client else "unknown"
+
     # ------------------------------------------------------------------ auth helpers
     def current_user(request: Request) -> dict | None:
         sess = ctx.signer.loads(request.cookies.get(SESSION_COOKIE))
@@ -176,11 +189,26 @@ def create_web_app(
 
     @app.post("/login", include_in_schema=False)
     def login(request: Request, email: str = Form(...), password: str = Form(...)):
-        user = db.one("SELECT * FROM users WHERE email = ?", (email.strip().lower(),))
+        email = email.strip().lower()
+        ip = client_ip(request)
+        if login_email_limit.blocked(email) or login_ip_limit.blocked(ip):
+            AuditLog(db, "platform").record("auth.login_throttled", level="warning", email=email)
+            resp = render(
+                request,
+                "login.html",
+                error="Too many attempts. Please wait 15 minutes and try again.",
+                user=None,
+            )
+            resp.status_code = 429
+            return resp
+        user = db.one("SELECT * FROM users WHERE email = ?", (email,))
         audit = AuditLog(db, user["tenant_id"] or "platform" if user else "platform")
         if not user or not verify_password(password, user["password_hash"]):
+            login_email_limit.hit(email)
+            login_ip_limit.hit(ip)
             audit.record("auth.login_failed", level="warning", email=email)
             return render(request, "login.html", error="Wrong email or password.", user=None)
+        login_email_limit.reset(email)
         audit.record("auth.login", actor=f"user:{user['email']}")
         resp = RedirectResponse("/", 303)
         resp.set_cookie(
@@ -354,9 +382,10 @@ def create_web_app(
         return RedirectResponse(f"/app/revenue{suffix}", 303)
 
     @app.post("/api/demo/{slug}/sms")
-    def demo_inbound_sms(slug: str, body: SmsIn):
-        """Simulated inbound text (a customer replying to a follow-up)."""
-        return revenue.inbound_sms(_demo_tenant(slug), body.from_number, body.text)
+    def demo_inbound_sms(slug: str, body: SmsIn, request: Request):
+        """Simulated inbound text (a customer replying to a follow-up). Demo businesses only."""
+        tid = _demo_tenant(slug, request, demo_sms_limit)
+        return revenue.inbound_sms(tid, body.from_number, body.text)
 
     @app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
     def admin(request: Request, user: dict = Depends(require_admin)):
@@ -404,27 +433,34 @@ def create_web_app(
     @app.get("/demo/{slug}", response_class=HTMLResponse, include_in_schema=False)
     def demo_page(request: Request, slug: str):
         t = store.tenant_by_slug(slug)
-        if not t:
+        if not t or not t["is_demo"]:  # real clients never get a public demo page
             raise HTTPException(404, "unknown business")
         return render(request, "call.html", tenant=t, user=current_user(request))
 
-    def _demo_tenant(slug: str) -> str:
+    def _demo_tenant(slug: str, request: Request | None = None, limiter=None) -> str:
         t = store.tenant_by_slug(slug)
-        if not t:
+        if not t or not t["is_demo"]:
             raise HTTPException(404, "unknown business")
+        if request is not None and limiter is not None:
+            if not limiter.hit(f"{client_ip(request)}|{slug}"):
+                raise HTTPException(429, "Too many demo requests. Please try again later.")
         return t["id"]
 
     @app.post("/api/demo/{slug}/calls")
-    def demo_start(slug: str):
+    def demo_start(slug: str, request: Request):
+        tid = _demo_tenant(slug, request, demo_call_limit)
+        if not demo_daily_limit.hit(slug):
+            raise HTTPException(429, "The demo line is busy today. Please try again tomorrow.")
         try:
-            return ctx.calls.start(_demo_tenant(slug), channel="browser_demo")
+            return ctx.calls.start(tid, channel="browser_demo")
         except CallError as e:
             raise HTTPException(409, str(e)) from e
 
     @app.post("/api/demo/{slug}/calls/{call_id}/turn")
-    def demo_turn(slug: str, call_id: str, body: TurnIn):
+    def demo_turn(slug: str, call_id: str, body: TurnIn, request: Request):
+        tid = _demo_tenant(slug, request, demo_turn_limit)
         try:
-            return ctx.calls.turn(_demo_tenant(slug), call_id, body.text)
+            return ctx.calls.turn(tid, call_id, body.text)
         except CallError as e:
             raise HTTPException(409, str(e)) from e
 
@@ -537,8 +573,8 @@ def create_web_app(
                     "UPDATE appointments SET lead_id = ? WHERE id = ? AND tenant_id = ?",
                     (lead_id, booked["appointment_id"], tenant_id),
                 )
-                tools.send_confirmation(booked["appointment_id"], call_id=call_ref)
-                return {**booked, "lead_id": lead_id}
+                sms = tools.send_confirmation(booked["appointment_id"], call_id=call_ref)
+                return {**booked, "lead_id": lead_id, "confirmation_text_sent": sms == "sent"}
             if tool == "answer_question":
                 return tools.answer_question(args["question"], call_id=call_ref)
             if tool == "transfer_call":

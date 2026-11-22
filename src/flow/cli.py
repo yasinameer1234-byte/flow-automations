@@ -100,6 +100,43 @@ def cmd_revenue_tick(args) -> int:
     return 0
 
 
+def cmd_create_tenant(args) -> int:
+    """Create a real client business from a profile file. Owner password is prompted."""
+    import getpass
+
+    from pydantic import ValidationError
+
+    from .core.db import Database
+    from .onboarding import OnboardingError, create_tenant, load_profile
+    from .web.auth import hash_password
+
+    try:
+        profile = load_profile(args.profile)
+    except (ValidationError, OSError, ValueError) as e:
+        print(f"error: the profile is not valid:\n{e}", file=sys.stderr)
+        return 1
+    if args.check:
+        print(f"OK: {profile.business.name} ({profile.business.slug}) is valid.")
+        return 0
+    pw = getpass.getpass(f"Password for {profile.owner.email} (min 12 characters): ")
+    if len(pw) < 12 or pw != getpass.getpass("Repeat password: "):
+        print("error: passwords must match and be at least 12 characters", file=sys.stderr)
+        return 1
+    db = Database(os.environ.get("FLOW_DB_PATH", "var/flow.db"))
+    try:
+        out = create_tenant(db, profile, owner_password_hash=hash_password(pw))
+    except OnboardingError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(f"Created {profile.business.name} as {out['tenant_id']} (slug {out['slug']}).")
+    print(f"Owner login: {profile.owner.email}")
+    print(
+        "Retell phone agent: python scripts/retell_setup.py --base-url <app URL> "
+        f'--slug {out["slug"]} --business "{profile.business.name}"'
+    )
+    return 0
+
+
 def cmd_check_config(args) -> int:
     from .deploy import ConfigError, check_required, current_env, secret_status
 
@@ -169,6 +206,9 @@ def main(argv: list[str] | None = None) -> int:
     ca = sub.add_parser("create-admin", help="create a platform admin (password prompted)")
     ca.add_argument("email")
     ca.add_argument("--name", default="Platform Admin")
+    ct = sub.add_parser("create-tenant", help="create a real client business from a profile file")
+    ct.add_argument("profile", help="path to a client profile .toml")
+    ct.add_argument("--check", action="store_true", help="validate the file only")
     sub.add_parser("revenue-tick", help="run the Revenue Engine once for every business")
     sub.add_parser("approvals", help="list pending approvals")
     for name in ("approve", "reject"):
@@ -191,8 +231,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {e}\nRun `flow check-config` to see what is missing.", file=sys.stderr)
             return 1
         _start_revenue_loop(web.state.revenue)
-        uvicorn.run(web, host=args.host, port=args.port, proxy_headers=True)
+        # Behind a hosting proxy (Render), trust its X-Forwarded-For so rate limits see the
+        # real client address. Locally only 127.0.0.1 is trusted.
+        uvicorn.run(
+            web,
+            host=args.host,
+            port=args.port,
+            proxy_headers=True,
+            forwarded_allow_ips=os.environ.get("FLOW_TRUSTED_PROXIES", "127.0.0.1"),
+        )
         return 0
+    if args.cmd == "create-tenant":
+        return cmd_create_tenant(args)
     if args.cmd == "revenue-tick":
         return cmd_revenue_tick(args)
     if args.cmd == "check-config":

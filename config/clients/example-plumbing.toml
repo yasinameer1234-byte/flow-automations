@@ -1,0 +1,63 @@
+# Example client profile. Copy it, fill in the client's real facts, then run:
+#   flow create-tenant config/clients/<client>.toml
+# Only put facts the owner confirmed. Answers with approved = false are stored but never spoken.
+# No passwords or keys belong in this file.
+
+[business]
+slug = "example-plumbing"          # lowercase, used in URLs
+name = "Example Plumbing Ltd."
+package = "growth"                 # starter | growth | scale
+timezone = "America/Toronto"
+business_phone = "416-555-0199"    # the number customers already call
+review_url = "https://example.com/review"   # their Google review link (optional)
+avg_job_value = 450                # from the owner, used only for labelled estimates
+close_rate = 0.6
+
+[hours]
+mon = ["08:00", "17:00"]
+tue = ["08:00", "17:00"]
+wed = ["08:00", "17:00"]
+thu = ["08:00", "17:00"]
+fri = ["08:00", "17:00"]
+sat = ["09:00", "13:00"]
+
+[ai]
+disclosure = "This call is answered by an AI assistant."
+emergency_keywords = ["burst", "flood", "flooding", "gas smell", "smell gas", "sewage"]
+emergency_instructions = "If you smell gas, leave the building now and call 911 from outside. If water is pouring, turn off the main shut-off valve if you safely can."
+
+[[services]]
+name = "Plumbing repair"
+keywords = ["leak", "leaking", "drip", "tap", "faucet", "toilet", "clog", "drain", "pipe"]
+duration_minutes = 60
+
+[[services]]
+name = "Water heater service"
+keywords = ["water heater", "hot water", "tank", "tankless"]
+duration_minutes = 90
+
+[[services]]
+name = "Free estimate"
+keywords = ["estimate", "quote", "renovation", "replace"]
+duration_minutes = 30
+
+[[answers]]
+question = "How much is a service call?"
+keywords = ["price", "cost", "charge", "fee", "much", "rate"]
+answer = "Our service call is $99. The technician quotes the repair on site before any work starts."
+approved = true
+
+[[answers]]
+question = "What areas do you serve?"
+keywords = ["area", "areas", "serve", "located", "travel"]
+answer = "We serve Toronto and York Region."
+approved = true
+
+[[staff]]
+name = "On-call technician"
+phone = "416-555-0198"
+handles_emergencies = true
+
+[owner]
+email = "owner@example.com"
+name = "Example Owner"

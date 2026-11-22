@@ -83,11 +83,21 @@ class Receptionist:
             s.goal = "cancel"
             return self._ask_or_continue(s)
         service = self.t.match_service(text)
-        if nlu.is_question(text) and not (service and nlu.wants_booking(text)):
+        if nlu.is_question(text):
+            # Questions are answered first, from approved answers only. A service mentioned
+            # in the question is remembered so a following "yes" books the right visit.
             res = self.t.answer_question(text, call_id=self.call_id)
-            if res["answer"] or not nlu.wants_booking(text):
+            if service:
+                s.service_id, s.reason = service["id"], s.reason or text
+            if res["answer"] or not (service or nlu.wants_booking(text)):
                 return self._answer(s, text, res)
-        if nlu.wants_booking(text) or (service and not nlu.is_question(text)):
+            s.goal = "book"
+            return self._ask_or_continue(
+                s,
+                prefix="I don't have an approved answer for that, so I won't guess. "
+                "The technician confirms it with you before any work. ",
+            )
+        if nlu.wants_booking(text) or service:
             s.goal = "book"
             ack = ""
             if service:
@@ -115,16 +125,45 @@ class Receptionist:
         self._absorb(s, text)
         return self._ask_or_continue(s)
 
+    def _side_track(self, s: CallState, text: str, reask: str) -> str | None:
+        """Handle a goodbye or a question in the middle of collecting details."""
+        if nlu.is_done(text) or (nlu.is_no(text) and not nlu.is_question(text)):
+            s.ended = True
+            s.stage = "done"
+            return f"No problem. Thanks for calling {self.business}. Have a great day!"
+        if nlu.is_question(text):
+            res = self.t.answer_question(text, call_id=self.call_id)
+            if res["answer"]:
+                s.questions_answered += 1
+                return f"{res['answer']} {reask}"
+            return f"I don't have an approved answer for that, so I won't guess. {reask}"
+        return None
+
     def _stage_ask_name(self, s, text):
-        s.name = nlu.extract_name(text, expecting=True) or s.name
+        name = nlu.extract_name(text, expecting=True)
+        if not name:
+            side = self._side_track(s, text, "To book, can I get your first and last name?")
+            if side:
+                return side
+            s.misunderstood += 1
+            if s.misunderstood >= 3:
+                s.ended = True
+                s.stage = "done"
+                return (
+                    "Sorry, I'm having trouble with that. Please call back any time, or ask "
+                    "for a person and we'll connect you. Thanks for calling!"
+                )
+            return "Sorry, I didn't catch your name. Could you say your first and last name?"
+        s.name = name
         self._absorb(s, text, name=False)
-        if not s.name:
-            return "Sorry, could I get your first and last name?"
         return self._ask_or_continue(s)
 
     def _stage_ask_phone(self, s, text):
         phone = nlu.extract_phone(text)
         if not phone:
+            side = self._side_track(s, text, "What's the best number to reach you?")
+            if side:
+                return side
             return "Sorry, I need a 10-digit phone number. What's the best number to reach you?"
         s.phone = phone
         self._absorb(s, text, name=False)
@@ -143,7 +182,7 @@ class Receptionist:
             o = s.offered[idx]
             return (
                 f"Just to confirm: {self._service_name(s)} for {s.name} on {o['label']}, "
-                f"and we'll text {format_phone(s.phone)}. Shall I book it?"
+                f"with {format_phone(s.phone)} as your number. Shall I book it?"
             )
         if nlu.extract_day(text, self._today()) or nlu.extract_part(text):
             s.shown = []
@@ -287,7 +326,8 @@ class Receptionist:
             )
             moved = f" I've cancelled your previous time on {old['label']}."
         status = self.t.send_confirmation(s.appointment_id, call_id=self.call_id)
-        texted = " You'll get a text confirmation shortly." if status == "sent_simulated" else ""
+        # Only promise a text when one is really sent. Today every SMS is simulated.
+        texted = " You'll get a text confirmation shortly." if status == "sent" else ""
         s.stage = "anything_else"
         return (
             f"You're booked for {appt['label']}.{moved}{texted} "
@@ -351,9 +391,14 @@ class Receptionist:
             )
         s.stage = "collect_emergency"
         ask = "What's your name and the best number to reach you?"
+        who = (
+            f"{res['on_call']}, our on-call technician"
+            if res.get("on_call")
+            else ("our on-call technician")
+        )
         return (
-            f"That sounds urgent. {safety} Our on-call technician isn't reachable right "
-            f"this second, so I'm flagging this as urgent. {ask}"
+            f"That sounds urgent. {safety} I'm flagging this as urgent for {who}, "
+            f"to call you back. {ask}"
         )
 
     def _transfer(self, s: CallState, text: str) -> str:
@@ -367,7 +412,7 @@ class Receptionist:
         s.goal = "callback"
         s.reason = s.reason or "asked to speak with a person"
         return self._ask_or_continue(
-            s, prefix="Everyone's busy right now. I'll have someone call you back. "
+            s, prefix="I can't put you through live right now, so I'll have someone call you back. "
         )
 
     def _finish_callback(self, s: CallState, urgent: bool) -> str:
@@ -378,7 +423,7 @@ class Receptionist:
             title += f": {s.reason[:80]}"
         s.task_id = self.t.create_task(kind, title, s.lead_id, call_id=self.call_id)
         s.stage = "anything_else"
-        when = "within minutes" if urgent else "as soon as possible"
+        when = "as an urgent callback" if urgent else "as soon as they can"
         return (
             f"Got it. I've asked the team to call you back at {format_phone(s.phone)} "
             f"{when}. Is there anything else?"

@@ -13,6 +13,8 @@ services:
     envVars:
       - key: FLOW_ENV
         value: staging
+      - key: FLOW_TRUSTED_PROXIES
+        value: "*"
       - key: FLOW_DB_PATH
         value: /home/flow/var/flow.db
       - key: FLOW_SECRET_KEY

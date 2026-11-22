@@ -13,6 +13,10 @@ from .schema import PACKAGES, PLATFORM_SCHEMA
 
 def init_platform_schema(db: Database) -> None:
     db._conn.executescript(PLATFORM_SCHEMA)
+    # Additive migrations for databases created by earlier versions.
+    cols = {r["name"] for r in db.query("PRAGMA table_info(tenants)")}
+    if "is_demo" not in cols:
+        db.execute("ALTER TABLE tenants ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0")
 
 
 @dataclass(frozen=True)
