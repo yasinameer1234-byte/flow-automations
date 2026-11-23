@@ -123,7 +123,9 @@ chatForm.addEventListener("submit", async (ev) => {
     if (!r.ok) throw new Error(j.detail || `HTTP ${r.status}`);
     chatId = j.chat_id;
     for (const m of j.messages) if (m.role === "agent" && m.content) chatTurns.push(m);
-    draw(chatTurns); show("Text chat with the AI receptionist");
+    draw(chatTurns);
+    if (j.ended) { chatId = null; chatTurns = []; show("Chat ended. Type again to start a new one."); }
+    else show("Text chat with the AI receptionist");
   } catch (err) { show("Couldn't send: " + (err.message || err)); }
   chatSend.disabled = false; chatSay.focus();
 });

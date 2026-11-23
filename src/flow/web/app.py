@@ -185,7 +185,7 @@ def create_web_app(
             trade = VoiceAgents.trade_for(t)
             if t["is_demo"] and trade:
                 try:
-                    voice_agents.ensure(t, trade)
+                    voice_agents.sync_prompt(t, trade)
                 except Exception as e:  # noqa: BLE001 (status is shown on /health)
                     logging.getLogger("flow.voice").warning(
                         "voice agent warm-up failed for %s: %s", t["slug"], e

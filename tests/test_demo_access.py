@@ -190,6 +190,8 @@ class FakeRetell:
                     {"role": "agent", "content": "Sure, I can help with that."},
                 ]
             }
+        if path.startswith("/update-retell-llm/"):
+            return {"llm_id": path.rsplit("/", 1)[1]}
         if path.startswith("/v2/get-call/"):
             return {
                 "call_id": "call_1",
@@ -406,3 +408,16 @@ def test_agent_chat_shares_the_voice_agents_brain(monkeypatch):
     c.post("/api/demo/northside/agent-chat", json={"content": "Priya Shah", "chat_id": "chat_1"})
     assert [p for _, p, _, _ in fake.calls[n:]] == ["/create-chat-completion"]
     assert c.post("/api/demo/maple-dental/agent-chat", json={"content": "hi"}).status_code == 404
+
+
+def test_prompt_sync_updates_the_agents_llm(monkeypatch):
+    fake = FakeRetell()
+    a = voice_app(monkeypatch, fake, FLOW_RETELL_AGENT_NORTHSIDE="agent_env")
+    va = a.state.voice_agents
+    t = a.state.db.one("SELECT * FROM tenants WHERE slug = 'northside'")
+    assert va.sync_prompt(t, "plumbing") == "llm_v"
+    method, path, body, _ = fake.calls[-1]
+    assert (method, path) == ("PATCH", "/update-retell-llm/llm_v")
+    assert "Ask the trade safety question" in body["general_prompt"]
+    assert "model" not in body
+    assert va.status["northside"] == "ready (stored), prompt synced"
