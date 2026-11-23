@@ -1,0 +1,7 @@
+# Verified false positives: the synthetic test-only login password "pw-123456789" used by
+# in-memory test apps in tests/test_revenue.py (commit e5568cc, before it was moved into a
+# constant). Not a credential for any real system. Add a line here only after checking.
+e5568cc312976d1bfd19808847b244d688d1c569:tests/test_revenue.py:generic-api-key:289
+e5568cc312976d1bfd19808847b244d688d1c569:tests/test_revenue.py:generic-api-key:290
+e5568cc312976d1bfd19808847b244d688d1c569:tests/test_revenue.py:generic-api-key:293
+e5568cc312976d1bfd19808847b244d688d1c569:tests/test_revenue.py:generic-api-key:319

@@ -12,6 +12,8 @@ from flow.secretary.seed import MAPLE, NORTHSIDE, seed
 from flow.secretary.store import Store
 from flow.secretary.tools import SecretaryTools
 
+TEST_PW = "test-only-" + "login"  # synthetic in-memory test apps only
+
 MON_10AM = datetime(2026, 11, 23, 15, 0, tzinfo=UTC)  # Monday 10:00 Toronto
 
 
@@ -286,11 +288,11 @@ def test_owner_approves_on_the_revenue_page(monkeypatch):
         Database(":memory:"),
         clock=lambda: clock["now"],
         secret="s",
-        admin_password="pw-123456789",
-        owner_password="pw-123456789",
+        admin_password=TEST_PW,
+        owner_password=TEST_PW,
     )
     c = TestClient(app)
-    c.post("/login", data={"email": "owner@northside.example", "password": "pw-123456789"})
+    c.post("/login", data={"email": "owner@northside.example", "password": TEST_PW})
     page = c.get("/app/revenue")
     assert page.status_code == 200 and "waiting for your approval" in page.text
     token = re.search(r'name="csrf" value="([0-9a-f]+)"', page.text).group(1)
@@ -316,7 +318,7 @@ def test_owner_approves_on_the_revenue_page(monkeypatch):
 
     # a Starter business owner can't turn it on
     m = TestClient(app)
-    m.post("/login", data={"email": "owner@maple.example", "password": "pw-123456789"})
+    m.post("/login", data={"email": "owner@maple.example", "password": TEST_PW})
     page = m.get("/app/revenue")
     assert "Not in your package" in page.text
     tok = re.search(r'name="csrf" value="([0-9a-f]+)"', m.get("/app/leads").text)
