@@ -29,7 +29,8 @@
 <h2>Voice agents (Retell)</h2>
 <div class="panel">
 <p class="small muted">Retell API key on the server: <strong>{{ 'set' if retell_ready else 'not set' }}</strong>.
-Browser test button (needs FLOW_RETELL_PUBLIC_KEY): <strong>{{ 'on' if retell_public else 'off' }}</strong>.
+The server finds or creates each demo business's agent by itself after every restart, and the demo page's voice button uses it.
+{% for slug, st in voice_status.items() %}<code>{{ slug }}</code>: {{ st }}. {% endfor %}
 Setting up an agent is free and never buys a phone number.</p>
 <table><thead><tr><th>Business</th><th>Voice agent</th><th>Set up</th></tr></thead><tbody>
 {% for r in rows %}<tr data-retell="{{ r.t.slug }}"><td>{{ r.t.name }}</td>

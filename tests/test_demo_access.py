@@ -138,17 +138,140 @@ def test_demo_bookings_expire_after_a_day(monkeypatch):
     assert db.one("SELECT COUNT(*) AS n FROM calls WHERE channel = 'synthetic_history'")["n"] > 0
 
 
-def test_real_voice_button_only_when_configured(monkeypatch):
-    c = TestClient(make(monkeypatch))
-    assert "retell-btn" not in c.get("/demo/northside").text
+class FakeRetell:
+    """Stands in for api.retellai.com: records requests, answers like Retell does."""
+
+    def __init__(self, agents=None, fail=None):
+        self.calls = []
+        self.agents = agents or []
+        self.fail = fail
+
+    def __call__(self, method, path, body, key):
+        self.calls.append((method, path, body, key))
+        if self.fail and path == self.fail:
+            from flow.voice.agent import RetellError
+
+            raise RetellError(f"Retell {method} {path} -> HTTP 500")
+        if path == "/list-agents":
+            return self.agents
+        if path == "/create-retell-llm":
+            return {"llm_id": "llm_new"}
+        if path == "/create-agent":
+            return {"agent_id": "agent_new"}
+        if path == "/v3/create-web-call":
+            return {
+                "call_id": "call_1",
+                "access_token": "tok_1",
+                "transport": "livekit",
+                "url": "wss://example.livekit",
+                "agent_id": body["agent_id"],
+            }
+        raise AssertionError(path)
+
+    def paths(self):
+        return [p for _, p, _, _ in self.calls]
+
+
+def voice_app(monkeypatch, fake, **env):
     a = make(
         monkeypatch,
-        FLOW_RETELL_PUBLIC_KEY="public_key_placeholder",
-        FLOW_RETELL_AGENT_NORTHSIDE="agent_placeholder",
+        RETELL_API_KEY="k-test",
+        FLOW_PUBLIC_URL="https://flow.example",
+        **env,
     )
+    a.state.voice_agents.request = fake
+    return a
+
+
+def test_voice_button_only_with_a_server_key(monkeypatch):
+    monkeypatch.delenv("RETELL_API_KEY", raising=False)
+    c = TestClient(make(monkeypatch))
+    assert "retell-btn" not in c.get("/demo/northside").text
+    assert c.post("/api/demo/northside/voice-call").status_code == 404
+    a = voice_app(monkeypatch, FakeRetell())
     html = TestClient(a).get("/demo/northside").text
-    assert "retell-btn" in html and "agent_placeholder" in html
+    assert "retell-btn" in html and "k-test" not in html
+    assert "No microphone? Use the text demo" in html
     assert TestClient(a).get("/static/vendor/retell-sdk-3.0.3.js").status_code == 200
+    # a business with no receptionist script for its trade gets no voice button
+    assert "retell-btn" not in TestClient(a).get("/demo/maple-dental").text
+
+
+def test_voice_call_reuses_the_agent_already_in_retell(monkeypatch):
+    fake = FakeRetell(
+        agents=[
+            {
+                "agent_id": "agent_old",
+                "agent_name": "Northside Plumbing & Heating receptionist",
+                "last_modification_timestamp": 1,
+            },
+            {
+                "agent_id": "agent_admin",
+                "agent_name": "Northside Plumbing & Heating receptionist",
+                "last_modification_timestamp": 5,
+            },
+            {
+                "agent_id": "agent_other",
+                "agent_name": "Someone else",
+                "last_modification_timestamp": 9,
+            },
+        ]
+    )
+    a = voice_app(monkeypatch, fake)
+    c = TestClient(a)
+    r = c.post("/api/demo/northside/voice-call")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["access_token"] == "tok_1" and body["transport"] == "livekit"
+    assert "agent_id" not in body and "k-test" not in r.text
+    assert fake.paths() == ["/list-agents", "/v3/create-web-call"]  # no new agent
+    assert fake.calls[1][2]["agent_id"] == "agent_admin"  # the newest match
+    assert fake.calls[1][3] == "k-test"
+    # the id is remembered: the next call skips the lookup
+    c.post("/api/demo/northside/voice-call")
+    assert fake.paths()[2:] == ["/v3/create-web-call"]
+    assert a.state.voice_agents.status["northside"] == "ready (stored)"
+
+
+def test_voice_call_creates_the_agent_when_none_exists(monkeypatch):
+    fake = FakeRetell()
+    a = voice_app(monkeypatch, fake)
+    r = TestClient(a).post("/api/demo/northside/voice-call")
+    assert r.status_code == 200
+    assert fake.paths() == [
+        "/list-agents",
+        "/create-retell-llm",
+        "/create-agent",
+        "/v3/create-web-call",
+    ]
+    tools = fake.calls[1][2]["general_tools"]
+    assert tools[0]["url"].startswith("https://flow.example/voice/northside/tools/")
+    assert fake.calls[2][2]["agent_name"] == "Northside Plumbing & Heating receptionist"
+    row = a.state.db.one("SELECT retell_agent_id FROM tenants WHERE slug = 'northside'")
+    assert row["retell_agent_id"] == "agent_new"
+    assert TestClient(a).get("/health").json()["voice_agents"] == {"northside": "ready (created)"}
+
+
+def test_voice_call_uses_the_env_agent_and_reports_retell_errors(monkeypatch):
+    fake = FakeRetell(fail="/v3/create-web-call")
+    a = voice_app(monkeypatch, fake, FLOW_RETELL_AGENT_NORTHSIDE="agent_env")
+    r = TestClient(a).post("/api/demo/northside/voice-call")
+    assert r.status_code == 502 and "text demo" in r.json()["detail"]
+    assert fake.paths() == ["/v3/create-web-call"]
+    assert fake.calls[0][2]["agent_id"] == "agent_env"
+    ev = a.state.db.one("SELECT event FROM audit_log WHERE event = 'retell.web_call_failed'")
+    assert ev is not None
+
+
+def test_voice_call_is_invite_only_and_rate_limited(monkeypatch):
+    fake = FakeRetell(agents=[])
+    a = voice_app(monkeypatch, fake, FLOW_DEMO_ACCESS="invite")
+    c = TestClient(a)
+    assert c.post("/api/demo/northside/voice-call").status_code == 403
+    assert fake.calls == []  # strangers never reach Retell
+    login(c)
+    codes = [c.post("/api/demo/northside/voice-call").status_code for _ in range(8)]
+    assert codes[:6] == [200] * 6 and codes[6:] == [429, 429]
 
 
 def test_admin_sets_up_a_retell_agent_with_the_servers_key(monkeypatch):
@@ -178,9 +301,11 @@ def test_admin_sets_up_a_retell_agent_with_the_servers_key(monkeypatch):
     # a second click doesn't silently create another agent
     r = c.post(f"/admin/tenants/{tid}/retell-agent", data={"csrf": csrf}, follow_redirects=False)
     assert r.status_code == 409
-    # the agent id feeds the browser voice button once a public key exists
-    monkeypatch.setenv("FLOW_RETELL_PUBLIC_KEY", "public_key_placeholder")
-    assert "agent_1" in TestClient(a).get("/demo/northside").text
+    # the voice button then uses that agent, with no lookup and no second agent
+    fake = FakeRetell()
+    a.state.voice_agents.request = fake
+    assert c.post("/api/demo/northside/voice-call").status_code == 200
+    assert fake.paths() == ["/v3/create-web-call"] and fake.calls[0][2]["agent_id"] == "agent_1"
 
 
 def test_retell_setup_needs_admin_and_key(monkeypatch):
