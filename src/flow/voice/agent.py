@@ -95,15 +95,27 @@ class VoiceAgents:
             how = "stored"
             try:
                 if not agent_id:
-                    agents = self.request("GET", "/list-agents", None, self.key)
                     want = self.agent_name(tenant["name"])
-                    matches = [
-                        a
-                        for a in (agents if isinstance(agents, list) else [])
-                        if a.get("agent_name") == want
-                    ]
+                    found = self.request(
+                        "POST",
+                        "/v2/list-agents?limit=1000",
+                        {
+                            "filter_criteria": {
+                                "channel": {"type": "string", "op": "eq", "value": "voice"},
+                                "query": want,
+                            }
+                        },
+                        self.key,
+                    )
+                    items = found.get("items", []) if isinstance(found, dict) else found
+                    matches = [a for a in items or [] if a.get("agent_name") == want]
                     if matches:
-                        newest = max(matches, key=lambda a: a.get("last_modification_timestamp", 0))
+                        newest = max(
+                            matches,
+                            key=lambda a: a.get(
+                                "user_modified_timestamp", a.get("last_modification_timestamp", 0)
+                            ),
+                        )
                         agent_id, how = newest["agent_id"], "found"
                 if not agent_id:
                     if not self.base_url():
