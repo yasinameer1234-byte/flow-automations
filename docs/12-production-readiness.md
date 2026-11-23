@@ -42,8 +42,8 @@ that it matches your real public IP. If it shows a Render or Cloudflare address,
 2. In the service's **Environment** tab, set:
    - `FLOW_PUBLIC_URL` = the service URL, e.g. `https://flow-automations-demo.onrender.com`
    - `RETELL_API_KEY` (from Retell, below)
-3. Tell Claude the service URL (a URL, not a secret). Claude runs `scripts/retell_setup.py`
-   against it and does the first test calls.
+3. Sign in as admin, open **Voice agents (Retell)**, and press **Set up voice agent** for the
+   business. It uses the key already on the server. Then do the first test calls.
 4. After the first deploy, sign in as admin and check the "your address" line (above).
 
 Known free-plan limits: the service sleeps after 15 minutes idle (about a minute to wake),

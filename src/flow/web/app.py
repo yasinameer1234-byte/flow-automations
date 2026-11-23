@@ -151,7 +151,13 @@ def create_web_app(
     # entry is whatever the caller typed, so trusting it would let anyone dodge the limits.
     proxy_hops = int(os.environ.get("FLOW_PROXY_HOPS", "0"))
 
+    # Some hosts put the verified caller address in a header of its own that callers can't
+    # set (Cloudflare's CF-Connecting-IP). When configured, that wins.
+    client_ip_header = os.environ.get("FLOW_CLIENT_IP_HEADER", "").strip().lower()
+
     def client_ip(request: Request) -> str:
+        if client_ip_header and request.headers.get(client_ip_header):
+            return request.headers[client_ip_header].split(",")[0].strip()
         if proxy_hops > 0:
             hops = [h.strip() for h in request.headers.get("x-forwarded-for", "").split(",")]
             hops = [h for h in hops if h]
@@ -159,6 +165,20 @@ def create_web_app(
                 return hops[-proxy_hops]
         peer = request.scope.get("client")
         return peer[0] if peer else "unknown"
+
+    @app.get("/whoami", include_in_schema=False)
+    def whoami(request: Request):
+        """Echo back only the caller's own address headers, to set FLOW_PROXY_HOPS correctly."""
+        h = request.headers
+        return {
+            "seen_as": client_ip(request),
+            "x_forwarded_for": h.get("x-forwarded-for"),
+            "cf_connecting_ip": h.get("cf-connecting-ip"),
+            "true_client_ip": h.get("true-client-ip"),
+            "x_real_ip": h.get("x-real-ip"),
+            "proxy_hops": proxy_hops,
+            "client_ip_header": client_ip_header or None,
+        }
 
     # ------------------------------------------------------------------ demo access
     # "public": anyone with the URL can try the demo business (local development).
@@ -449,7 +469,63 @@ def create_web_app(
             demo_access=demo_access,
             seen_ip=client_ip(request),
             demo_link=request.query_params.get("demo_link"),
+            retell_ready=bool(retell_key),
+            retell_public=bool(os.environ.get("FLOW_RETELL_PUBLIC_KEY")),
         )
+
+    @app.post("/admin/tenants/{tenant_id}/retell-agent", include_in_schema=False)
+    def setup_retell_agent(
+        request: Request,
+        tenant_id: str,
+        trade: str = Form("plumbing"),
+        area: str = Form("Toronto and the GTA"),
+        replace: str = Form(""),
+        csrf: str = Form(""),
+        user: dict = Depends(require_admin),
+    ):
+        """Create this business's Retell agent with the key already in the server's env.
+
+        Free: creates an LLM and an agent only. Never buys a phone number.
+        """
+        check_csrf(user, csrf)
+        from ..voice import setup as retell_setup
+
+        t = store.tenant(tenant_id)
+        if not t:
+            raise HTTPException(404, "unknown business")
+        if not retell_key:
+            raise HTTPException(503, "RETELL_API_KEY is not set on the server")
+        if t.get("retell_agent_id") and replace != "1":
+            raise HTTPException(409, "this business already has a voice agent")
+        base = os.environ.get("FLOW_PUBLIC_URL", "").rstrip("/") or str(request.base_url).rstrip(
+            "/"
+        )
+        if base.startswith("http://") and env != "local":
+            base = "https://" + base[len("http://") :]  # behind Render's TLS proxy
+        poster = getattr(app.state, "retell_poster", None)
+        try:
+            ids = retell_setup.create_agent(
+                retell_key, base, t["slug"], trade, t["name"], area[:80], poster=poster
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except Exception as e:  # Retell down or refused: show it, store nothing
+            AuditLog(db, tenant_id).record(
+                "retell.agent_setup_failed", level="error", error=f"{type(e).__name__}: {e}"[:200]
+            )
+            raise HTTPException(502, f"Retell refused the setup: {type(e).__name__}") from e
+        db.execute(
+            "UPDATE tenants SET retell_agent_id = ?, retell_llm_id = ? WHERE id = ?",
+            (ids["agent_id"], ids["llm_id"], tenant_id),
+        )
+        AuditLog(db, tenant_id).record(
+            "retell.agent_created",
+            actor=f"user:{user['email']}",
+            agent_id=ids["agent_id"],
+            tools_base=base,
+            trade=trade,
+        )
+        return RedirectResponse("/admin", 303)
 
     @app.post("/admin/demo-links", include_in_schema=False)
     def create_demo_link(
@@ -521,12 +597,10 @@ def create_web_app(
         # Real voice agent in the browser (Retell web call): only when both are configured.
         # The public key is Retell's browser key, limited to our domain in Retell's dashboard.
         agent_var = "FLOW_RETELL_AGENT_" + slug.upper().replace("-", "_")
+        agent_id = os.environ.get(agent_var) or t.get("retell_agent_id")
         retell_web = None
-        if os.environ.get("FLOW_RETELL_PUBLIC_KEY") and os.environ.get(agent_var):
-            retell_web = {
-                "public_key": os.environ["FLOW_RETELL_PUBLIC_KEY"],
-                "agent_id": os.environ[agent_var],
-            }
+        if os.environ.get("FLOW_RETELL_PUBLIC_KEY") and agent_id:
+            retell_web = {"public_key": os.environ["FLOW_RETELL_PUBLIC_KEY"], "agent_id": agent_id}
         resp = render(
             request, "call.html", tenant=t, user=current_user(request), retell_web=retell_web
         )
