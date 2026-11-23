@@ -12,6 +12,7 @@ import json
 import os
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 
@@ -155,4 +156,23 @@ class VoiceAgents:
             k: res.get(k)
             for k in ("call_id", "access_token", "transport", "url", "ice_servers")
             if res.get(k) is not None
+        }
+
+    def call_info(self, tenant: dict, call_id: str) -> dict:
+        """What happened on a web call (status, why it ended, transcript), for the demo page."""
+        res = self.request("GET", f"/v2/get-call/{urllib.parse.quote(call_id)}", None, self.key)
+        if not isinstance(res, dict):
+            raise RetellError("Retell returned no call")
+        row = self.db.one("SELECT retell_agent_id FROM tenants WHERE id = ?", (tenant["id"],))
+        if res.get("agent_id") != (row or {}).get("retell_agent_id"):
+            raise PermissionError("call belongs to another agent")
+        return {
+            k: res.get(k)
+            for k in (
+                "call_id",
+                "call_status",
+                "disconnection_reason",
+                "duration_ms",
+                "transcript",
+            )
         }

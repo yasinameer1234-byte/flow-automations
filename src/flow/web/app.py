@@ -708,6 +708,19 @@ def create_web_app(
                 502, "The voice agent couldn't start. The text demo below still works."
             ) from e
 
+    @app.get("/api/demo/{slug}/voice-call/{call_id}")
+    def demo_voice_call_info(slug: str, call_id: str, request: Request):
+        """How a browser voice call went, straight from Retell (status, end reason, transcript)."""
+        tid = _demo_tenant(slug, request, demo_turn_limit)
+        if not retell_key:
+            raise HTTPException(404, "This business has no voice agent.")
+        try:
+            return voice_agents.call_info(store.tenant(tid), call_id)
+        except PermissionError as e:
+            raise HTTPException(404, "unknown call") from e
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(502, f"Retell: {str(e)[:160]}") from e
+
     @app.post("/api/demo/{slug}/calls/{call_id}/turn")
     def demo_turn(slug: str, call_id: str, body: TurnIn, request: Request):
         tid = _demo_tenant(slug, request, demo_turn_limit)

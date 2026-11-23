@@ -145,6 +145,7 @@ class FakeRetell:
         self.calls = []
         self.agents = agents or []
         self.fail = fail
+        self.info_agent = "agent_new"
 
     def __call__(self, method, path, body, key):
         self.calls.append((method, path, body, key))
@@ -170,6 +171,15 @@ class FakeRetell:
                 "transport": "livekit",
                 "url": "wss://example.livekit",
                 "agent_id": body["agent_id"],
+            }
+        if path.startswith("/v2/get-call/"):
+            return {
+                "call_id": "call_1",
+                "agent_id": self.info_agent,
+                "call_status": "ended",
+                "disconnection_reason": "user_hangup",
+                "transcript": "Agent: Hi",
+                "recording_url": "https://secret.example/rec",
             }
         raise AssertionError(path)
 
@@ -346,3 +356,16 @@ def test_dashboard_labels_texts_as_simulated(monkeypatch):
     login(c, "owner@northside.example")
     html = c.get("/app").text
     assert "simulated (not sent)" in html and "texts sent" not in html
+
+
+def test_voice_call_info_comes_from_retell_for_this_business_only(monkeypatch):
+    fake = FakeRetell()
+    a = voice_app(monkeypatch, fake)
+    c = TestClient(a)
+    assert c.post("/api/demo/northside/voice-call").status_code == 200
+    r = c.get("/api/demo/northside/voice-call/call_1")
+    assert r.status_code == 200
+    assert r.json()["disconnection_reason"] == "user_hangup"
+    assert "recording_url" not in r.json()
+    fake.info_agent = "agent_someone_else"
+    assert c.get("/api/demo/northside/voice-call/call_1").status_code == 404
