@@ -70,6 +70,12 @@ def tenant_metrics(
         "qualified_leads": int(leads),
         "appointments_booked": int(booked),
         "messages_sent": int(messages),
+        "messages_real": int(
+            scalar(
+                "SELECT COUNT(*) FROM messages WHERE tenant_id = ? AND created_at >= ? "
+                "AND status IN ('sent', 'delivered')"
+            )
+        ),
         "handoffs": int(callbacks),
         "jobs_won": int(won),
         "verified_revenue": verified,

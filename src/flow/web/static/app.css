@@ -76,3 +76,7 @@ input, select { font: inherit; padding: 8px 10px; border: 1px solid var(--border
 .call-foot input { flex: 1; min-width: 0; }
 .suggest { display: flex; gap: 6px; flex-wrap: wrap; }
 .suggest button { font-size: 13px; padding: 4px 10px; }
+.speaking { color: var(--good); font-weight: 600; }
+.text-demo > summary { cursor: pointer; padding: 8px 0; }
+.text-demo[open] > summary { margin-bottom: 12px; }
+#retell-btn { white-space: nowrap; }

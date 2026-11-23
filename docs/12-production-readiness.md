@@ -15,7 +15,7 @@ customer yet.
 | Demo data clean-up | **Works** | Test: browser-demo bookings, leads and calls older than 24 h are deleted on the next demo call; seeded history untouched |
 | Caller names and repeated questions | **Works in the browser demo** | Tests replay the audit transcripts ("making a noise", the price loop) plus new cases (name volunteered first, phone before name, name plus question, Emily/Kelly/Ming, "sorry?") |
 | Name guard for the voice agent | **Works at the tool level** | Test: `book_appointment` returns `name_unclear` for "Making", "First", digits |
-| Retell voice agent (phone or browser) | **Built, never run with a real key** | The demo page's voice button loads the bundled Retell SDK and reaches `api.retellai.com/v3/create-web-call`; with a placeholder key Retell answers "Invalid Public Key", which the page shows. A real conversation needs the keys below |
+| Retell voice agent (browser) | **Built; live test pending** | The server finds the business's agent in Retell by name (or creates it) with the key on Render, then starts each browser call itself and hands the page a one-call token. No public key needed. Tests with a fake Retell: reuse, create, env agent, errors, invite-only, rate limits |
 | Booking through Retell tools | **Built, tested with signed fake requests** | Existing tests sign requests the way Retell does. Not yet called by Retell itself |
 | SMS confirmations and follow-ups | **Built for Twilio, simulated until keys exist** | Tests with a fake Twilio: send, allow-list, failure handling, signed delivery receipts. No real text has been sent. `api.twilio.com` is blocked from this sandbox |
 | Emergency transfer | **Simulated** | Becomes an urgent callback task for the on-call person. A live transfer needs a Retell phone number (paid) |
@@ -55,11 +55,11 @@ USD $7–25/month), which needs your approval first.
 1. Sign up at retellai.com (USD $10 free credit).
 2. **API key** → Render `RETELL_API_KEY` and the Claude cloud environment variable
    `RETELL_API_KEY`.
-3. **Public key** (Settings → Public Keys), limited to the Render domain →
-   `FLOW_RETELL_PUBLIC_KEY` in Render.
-4. After Claude creates the agent, put its id in `FLOW_RETELL_AGENT_NORTHSIDE` in Render.
-   The demo page then shows "Talk to the real voice agent". It's a free web call. Each call is
-   capped at 10 minutes.
+3. Nothing else. After every restart the server looks up "Northside Plumbing & Heating
+   receptionist" in the Retell account and reuses it (creating it only if missing), so the
+   free plan's disk reset never makes duplicates. `/health` shows the result. The demo page
+   then shows "Start voice call". Web calls use Retell credit; each call is capped at
+   10 minutes, 6 per visitor per hour and `FLOW_VOICE_CALLS_PER_DAY` (40) per day.
 
 ## Real SMS (Twilio): off until the first paying client
 Decision 2026-11-23: no Twilio trial for now; SMS stays simulated and callers are never
@@ -90,9 +90,11 @@ the allow-list, and demo businesses never text anyone else.
 |---|---|---|
 | `FLOW_DEMO_ACCESS` | `public` locally, `invite` hosted | Who can open the demo business |
 | `FLOW_DEMO_RETENTION_HOURS` | `24` | Browser-demo bookings older than this are deleted |
-| `FLOW_PROXY_HOPS` | `0` (Render: `1`) | Which `X-Forwarded-For` entry is the real caller |
+| `FLOW_CLIENT_IP_HEADER` | unset (Render: `cf-connecting-ip`) | Header the host sets with the real visitor address; wins over `X-Forwarded-For` |
+| `FLOW_PROXY_HOPS` | `0` (Render: `3`) | Fallback: which `X-Forwarded-For` entry (from the right) is the visitor |
 | `FLOW_PUBLIC_URL` | unset | Public URL, used to check Twilio signatures |
-| `FLOW_RETELL_PUBLIC_KEY`, `FLOW_RETELL_AGENT_<SLUG>` | unset | Real voice agent button on the demo page |
+| `FLOW_RETELL_AGENT_<SLUG>` | unset | Optional: pin a specific Retell agent for a demo business |
+| `FLOW_VOICE_CALLS_PER_DAY` | `40` | Daily cap on browser voice calls per demo business |
 | `FLOW_SMS_PROVIDER`, `TWILIO_*`, `FLOW_SMS_ALLOWLIST` | simulated | Real SMS |
 
 ## Rebuilding the bundled Retell browser SDK
@@ -101,6 +103,6 @@ its dependencies (livekit-client, eventemitter3) by esbuild, so the page loads n
 CDN:
 ```bash
 npm i retell-client-js-sdk@3.0.3 esbuild@0.24.2
-echo 'export { RetellClient } from "retell-client-js-sdk";' > entry.js
+echo 'export { RetellClient, RetellWebClient } from "retell-client-js-sdk";' > entry.js
 npx esbuild entry.js --bundle --format=esm --minify --target=es2020 --outfile=retell-sdk.js
 ```

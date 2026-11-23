@@ -99,10 +99,11 @@ class RetellWebhook:
         profile = self.store.profile(tenant_id)
         self.db.execute(
             "INSERT INTO calls (id, tenant_id, channel, caller_number, started_at, after_hours, "
-            "state_json) VALUES (?, ?, 'phone', ?, ?, ?, '{}')",
+            "state_json) VALUES (?, ?, ?, ?, ?, ?, '{}')",
             (
                 call["call_id"],
                 tenant_id,
+                "voice_web" if call.get("call_type") == "web_call" else "phone",
                 normalize_phone(call.get("from_number")) or None,
                 started.isoformat(),
                 int(not is_open(profile, started)),

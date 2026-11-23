@@ -8,7 +8,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,6 +33,7 @@ from ..secretary.schema import PACKAGES
 from ..secretary.seed import seed
 from ..secretary.store import Store
 from ..secretary.tools import SecretaryTools, ToolError, format_phone
+from ..voice.agent import VoiceAgents
 from ..voice.retell import RetellWebhook, verify_signature
 from .auth import SESSION_COOKIE, SessionSigner, hash_password, verify_password
 from .ratelimit import RateLimiter
@@ -50,14 +53,16 @@ class WebContext:
 # Browser-demo calls older than a cutoff, children first. Each takes (tenant_id, cutoff).
 _PURGE_DEMO_SQL = (
     "DELETE FROM appointments WHERE source_call_id IN (SELECT id FROM calls WHERE "
-    "tenant_id = ? AND channel = 'browser_demo' AND started_at < ?)",
+    "tenant_id = ? AND channel IN ('browser_demo', 'voice_web') AND started_at < ?)",
     "DELETE FROM tasks WHERE lead_id IN (SELECT id FROM leads WHERE source_call_id IN "
-    "(SELECT id FROM calls WHERE tenant_id = ? AND channel = 'browser_demo' AND started_at < ?))",
+    "(SELECT id FROM calls WHERE tenant_id = ? AND channel IN ('browser_demo', 'voice_web') "
+    "AND started_at < ?))",
     "DELETE FROM leads WHERE source_call_id IN (SELECT id FROM calls WHERE "
-    "tenant_id = ? AND channel = 'browser_demo' AND started_at < ?)",
+    "tenant_id = ? AND channel IN ('browser_demo', 'voice_web') AND started_at < ?)",
     "DELETE FROM call_turns WHERE call_id IN (SELECT id FROM calls WHERE "
-    "tenant_id = ? AND channel = 'browser_demo' AND started_at < ?)",
-    "DELETE FROM calls WHERE tenant_id = ? AND channel = 'browser_demo' AND started_at < ?",
+    "tenant_id = ? AND channel IN ('browser_demo', 'voice_web') AND started_at < ?)",
+    "DELETE FROM calls WHERE tenant_id = ? AND channel IN ('browser_demo', 'voice_web') "
+    "AND started_at < ?",
 )
 
 
@@ -144,7 +149,44 @@ def create_web_app(
     demo_turn_limit = RateLimiter(120, 600)  # demo messages per address per 10 minutes
     demo_sms_limit = RateLimiter(20, 3600)
     demo_daily_limit = RateLimiter(int(os.environ.get("FLOW_DEMO_CALLS_PER_DAY", "300")), 86400)
-    app.state.limits = (login_email_limit, login_ip_limit, demo_call_limit, demo_daily_limit)
+    # Real voice calls spend Retell credit, so they get their own, tighter limits.
+    demo_voice_limit = RateLimiter(6, 3600)  # voice calls per address per hour
+    demo_voice_daily = RateLimiter(int(os.environ.get("FLOW_VOICE_CALLS_PER_DAY", "40")), 86400)
+    app.state.limits = (
+        login_email_limit,
+        login_ip_limit,
+        demo_call_limit,
+        demo_daily_limit,
+        demo_voice_limit,
+        demo_voice_daily,
+    )
+
+    # ------------------------------------------------------------------ Retell voice agents
+    retell_key = os.environ.get("RETELL_API_KEY", "")
+
+    def public_base() -> str:
+        return (
+            os.environ.get("FLOW_PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or ""
+        ).rstrip("/")
+
+    voice_agents = VoiceAgents(db, retell_key, public_base)
+    app.state.voice_agents = voice_agents
+
+    def warm_voice_agents() -> None:
+        # After a restart the free tier's disk is empty: find (or make) each demo agent now,
+        # so the first prospect doesn't wait for it.
+        for t in store.tenants():
+            trade = VoiceAgents.trade_for(t)
+            if t["is_demo"] and trade:
+                try:
+                    voice_agents.ensure(t, trade)
+                except Exception as e:  # noqa: BLE001 (status is shown on /health)
+                    logging.getLogger("flow.voice").warning(
+                        "voice agent warm-up failed for %s: %s", t["slug"], e
+                    )
+
+    if hosted and retell_key:
+        threading.Thread(target=warm_voice_agents, name="voice-warmup", daemon=True).start()
 
     # Behind a proxy (Render), the caller's address is the entry that the LAST trusted proxy
     # appended to X-Forwarded-For: FLOW_PROXY_HOPS entries from the right. The left-most
@@ -470,7 +512,7 @@ def create_web_app(
             seen_ip=client_ip(request),
             demo_link=request.query_params.get("demo_link"),
             retell_ready=bool(retell_key),
-            retell_public=bool(os.environ.get("FLOW_RETELL_PUBLIC_KEY")),
+            voice_status=voice_agents.status,
         )
 
     @app.post("/admin/tenants/{tenant_id}/retell-agent", include_in_schema=False)
@@ -594,13 +636,11 @@ def create_web_app(
                 "for a new one.</p></body>",
                 status_code=403,
             )
-        # Real voice agent in the browser (Retell web call): only when both are configured.
-        # The public key is Retell's browser key, limited to our domain in Retell's dashboard.
-        agent_var = "FLOW_RETELL_AGENT_" + slug.upper().replace("-", "_")
-        agent_id = os.environ.get(agent_var) or t.get("retell_agent_id")
+        # Real voice agent in the browser (Retell web call). The server starts the call with
+        # its own key and hands the browser a one-call token, so no key reaches the page.
         retell_web = None
-        if os.environ.get("FLOW_RETELL_PUBLIC_KEY") and agent_id:
-            retell_web = {"public_key": os.environ["FLOW_RETELL_PUBLIC_KEY"], "agent_id": agent_id}
+        if retell_key and VoiceAgents.trade_for(t):
+            retell_web = {"slug": slug}
         resp = render(
             request, "call.html", tenant=t, user=current_user(request), retell_web=retell_web
         )
@@ -646,6 +686,27 @@ def create_web_app(
             return ctx.calls.start(tid, channel="browser_demo")
         except CallError as e:
             raise HTTPException(409, str(e)) from e
+
+    @app.post("/api/demo/{slug}/voice-call")
+    def demo_voice_call(slug: str, request: Request):
+        """Start a real Retell voice call in the browser. Returns a one-call access token."""
+        tid = _demo_tenant(slug, request, demo_voice_limit)
+        t = store.tenant(tid)
+        trade = VoiceAgents.trade_for(t)
+        if not retell_key or not trade:
+            raise HTTPException(404, "This business has no voice agent.")
+        if not demo_voice_daily.hit(slug):
+            raise HTTPException(429, "The voice line is busy today. Try the text demo below.")
+        purge_old_demo_calls(tid)
+        try:
+            return voice_agents.web_call(t, trade, metadata={"source": "browser_demo"})
+        except Exception as e:  # Retell down or refused: say so, keep the text demo usable
+            AuditLog(db, tid).record(
+                "retell.web_call_failed", level="error", error=f"{type(e).__name__}: {e}"[:200]
+            )
+            raise HTTPException(
+                502, "The voice agent couldn't start. The text demo below still works."
+            ) from e
 
     @app.post("/api/demo/{slug}/calls/{call_id}/turn")
     def demo_turn(slug: str, call_id: str, body: TurnIn, request: Request):
@@ -726,7 +787,6 @@ def create_web_app(
             raise HTTPException(401, "invalid tenant key")
         return t["id"]
 
-    retell_key = os.environ.get("RETELL_API_KEY", "")
     webhook = RetellWebhook(db, store, clock=clock)
     audit = AuditLog(db, "platform")
 
@@ -890,6 +950,7 @@ def create_web_app(
             "tenants": len(store.tenants()),
             "voice": "browser demo + Retell phone" if retell_key else "browser demo only",
             "messaging": "simulated",
+            **({"voice_agents": voice_agents.status} if env != "production" else {}),
         }
 
     app.state.json = json

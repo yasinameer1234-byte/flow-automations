@@ -16,6 +16,8 @@ const caller = "Jordan " + ["Quill", "Brook", "Ashford", "Lane", "Fenwick"][Date
 
   // 1. The caller phones the business (browser demo, voice off for the test).
   await page.goto(`${BASE}/demo/northside`);
+  // With a real voice agent configured, the text demo sits in a collapsed section.
+  await page.evaluate(() => document.querySelector("details.text-demo")?.setAttribute("open", ""));
   await page.uncheck("#voice");
   await page.click("#call-btn");
   await page.waitForSelector(".bubble.agent");

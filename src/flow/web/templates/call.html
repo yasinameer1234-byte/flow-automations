@@ -3,7 +3,29 @@
 {% block body %}
 <div class="phone">
   <h1>Call {{ tenant.name }}</h1>
+  {% if retell_web %}
+  <p class="sub">Talk to the AI receptionist out loud, like a real caller. Synthetic business: bookings land in this demo's calendar and dashboard, and no texts are sent (confirmations are simulated).</p>
+  <div class="call-card" id="retell-card">
+    <div class="call-head">
+      <div><strong>{{ tenant.name }} · AI receptionist</strong>
+        <div class="muted small" id="retell-status">Not connected. Needs your microphone.</div></div>
+      <div class="inline">
+        <span class="speaking small muted" id="retell-talking" hidden>● speaking</span>
+        <button class="primary" id="retell-btn" type="button">Start voice call</button>
+      </div>
+    </div>
+    <div class="transcript" id="retell-transcript" aria-live="polite">
+      <p class="muted small" id="retell-hint">Press Start, allow the microphone, and say hello. Try: "My kitchen sink is leaking and I'd like someone to come out." You can interrupt it at any time.</p>
+    </div>
+  </div>
+  <p class="muted small" id="retell-after"></p>
+  <script>window.FLOW_RETELL = {{ retell_web|tojson }};</script>
+  <script type="module" src="/static/retell_call.js"></script>
+  <details class="text-demo" style="margin-top:20px">
+    <summary><strong>No microphone? Use the text demo</strong></summary>
+  {% else %}
   <p class="sub">Browser demo of the AI Secretary. Speak (Chrome) or type. Synthetic business: no real calls, texts or bookings.</p>
+  {% endif %}
   <div class="call-card">
     <div class="call-head">
       <div><strong>{{ tenant.name }}</strong><div class="muted small" id="status">Not connected</div></div>
@@ -33,14 +55,7 @@
   </div>
   <p class="muted small" id="after"></p>
   {% if retell_web %}
-  <div class="call-card" id="retell-card" style="margin-top:16px;padding:16px">
-    <strong>Talk to the real voice agent</strong>
-    <p class="muted small">This is the same AI receptionist that answers the phone, in your browser (microphone needed). Bookings land in the same calendar and dashboard.</p>
-    <button class="primary" id="retell-btn" type="button">Start voice call</button>
-    <span class="muted small" id="retell-status">Not connected</span>
-  </div>
-  <script>window.FLOW_RETELL = {{ retell_web|tojson }};</script>
-  <script type="module" src="/static/retell_call.js"></script>
+  </details>
   {% endif %}
 </div>
 <script>window.FLOW_TENANT = {{ tenant.slug|tojson }};</script>

@@ -31,7 +31,7 @@
   <div class="label">AI conversation minutes</div>
   <div class="value">{{ m.minutes_used|int }} <span class="muted small">of {{ m.minutes_allowance }}</span></div>
   <div class="meter" role="img" aria-label="{{ m.minutes_pct }}% of included minutes used"><span style="width: {{ [m.minutes_pct, 100]|min }}%"></span></div>
-  <div class="note">{{ m.minutes_pct }}% used · {{ m.messages_sent }} confirmation texts sent</div>
+  <div class="note">{{ m.minutes_pct }}% used · {% if m.messages_real %}{{ m.messages_real }} texts sent{% if m.messages_sent > m.messages_real %}, {{ m.messages_sent - m.messages_real }} simulated{% endif %}{% else %}{{ m.messages_sent }} confirmation texts simulated (not sent){% endif %}</div>
 </div>
 
 <div class="two">
