@@ -17,12 +17,18 @@
     <div class="transcript" id="retell-transcript" aria-live="polite">
       <p class="muted small" id="retell-hint">Press Start, allow the microphone, and say hello. Try: "My kitchen sink is leaking and I'd like someone to come out." You can interrupt it at any time.</p>
     </div>
+    <div class="call-foot">
+      <form id="chat-form">
+        <input id="chat-say" placeholder="No microphone? Type to the same AI receptionist…" autocomplete="off" aria-label="Message to the AI receptionist" maxlength="500">
+        <button type="submit" id="chat-send">Send</button>
+      </form>
+    </div>
   </div>
   <p class="muted small" id="retell-after"></p>
   <script>window.FLOW_RETELL = {{ retell_web|tojson }};</script>
   <script type="module" src="/static/retell_call.js"></script>
   <details class="text-demo" style="margin-top:20px">
-    <summary><strong>No microphone? Use the text demo</strong></summary>
+    <summary><strong>Offline practice version (scripted, no AI)</strong></summary>
   {% else %}
   <p class="sub">Browser demo of the AI Secretary. Speak (Chrome) or type. Synthetic business: no real calls, texts or bookings.</p>
   {% endif %}

@@ -57,6 +57,7 @@ class VoiceAgents:
         self.base_url = base_url
         self.request = requester or _request
         self.status: dict[str, str] = {}
+        self._chat_agents: dict[str, str] = {}
         self._lock = threading.Lock()
 
     @staticmethod
@@ -176,3 +177,76 @@ class VoiceAgents:
                 "transcript",
             )
         }
+
+    # ---------------------------------------------------------------- text chat, same brain
+    # A Retell chat agent that shares the voice agent's LLM (prompt and tools): lets anyone
+    # without a microphone, and our own automated tests, talk to the real receptionist in text.
+
+    def chat_agent(self, tenant: dict, trade: str) -> str:
+        slug = tenant["slug"]
+        if slug in self._chat_agents:
+            return self._chat_agents[slug]
+        voice_id = self.ensure(tenant, trade)
+        want = self.agent_name(tenant["name"]) + " (text)"
+        found = self.request(
+            "POST",
+            "/v2/list-agents?limit=1000",
+            {
+                "filter_criteria": {
+                    "channel": {"type": "string", "op": "eq", "value": "chat"},
+                    "query": want,
+                }
+            },
+            self.key,
+        )
+        items = found.get("items", []) if isinstance(found, dict) else found
+        matches = [a for a in items or [] if a.get("agent_name") == want]
+        if matches:
+            agent_id = max(matches, key=lambda a: a.get("user_modified_timestamp", 0))["agent_id"]
+        else:
+            voice = self.request(
+                "GET", f"/get-agent/{urllib.parse.quote(voice_id)}", None, self.key
+            )
+            llm_id = ((voice or {}).get("response_engine") or {}).get("llm_id")
+            if not llm_id:
+                raise RetellError("voice agent has no Retell LLM to share")
+            created = self.request(
+                "POST",
+                "/create-chat-agent",
+                {
+                    "agent_name": want,
+                    "response_engine": {"type": "retell-llm", "llm_id": llm_id},
+                },
+                self.key,
+            )
+            agent_id = created["agent_id"]
+        self._chat_agents[slug] = agent_id
+        return agent_id
+
+    def chat(self, tenant: dict, trade: str, chat_id: str | None, content: str) -> dict:
+        """Send one caller message; returns the chat id and the agent's new messages."""
+        if not chat_id:
+            agent_id = self.chat_agent(tenant, trade)
+            chat = self.request(
+                "POST",
+                "/create-chat",
+                {"agent_id": agent_id, "metadata": {"source": "browser_demo"}},
+                self.key,
+            )
+            chat_id = chat["chat_id"]
+        res = self.request(
+            "POST",
+            "/create-chat-completion",
+            {"chat_id": chat_id, "content": content},
+            self.key,
+        )
+        out = []
+        for m in (res or {}).get("messages", []):
+            role = m.get("role")
+            if role in ("agent", "user"):
+                out.append({"role": role, "content": m.get("content", "")})
+            elif role == "tool_call_invocation":
+                out.append({"role": "tool", "name": m.get("name"), "args": m.get("arguments")})
+            elif role == "tool_call_result":
+                out.append({"role": "tool_result", "content": str(m.get("content", ""))[:500]})
+        return {"chat_id": chat_id, "messages": out}
