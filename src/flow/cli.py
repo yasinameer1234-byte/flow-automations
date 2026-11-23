@@ -190,6 +190,28 @@ def cmd_create_admin(args) -> int:
     return 0
 
 
+def cmd_sms_test(args) -> int:
+    """Real-SMS smoke test. Prints the provider's answer; delivery shows up via the webhook."""
+    from .integrations.sms import sms_from_env
+
+    sender = sms_from_env()
+    if not sender.real:
+        print(
+            "SMS is simulated: set FLOW_SMS_PROVIDER=twilio, TWILIO_ACCOUNT_SID, "
+            "TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER and FLOW_SMS_ALLOWLIST first.",
+            file=sys.stderr,
+        )
+        return 1
+    if not sender.allowed(args.to, demo=False):
+        print("error: that number is not on FLOW_SMS_ALLOWLIST", file=sys.stderr)
+        return 1
+    res = sender.send(args.to, "Flow Automations test text. Reply STOP to opt out.")
+    print(f"status={res.status} id={res.provider_id or '-'} error={res.error or '-'}")
+    if res.status == "sent":
+        print("Accepted by Twilio. Check the phone; the delivery receipt updates the outbox.")
+    return 0 if res.status == "sent" else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="flow")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -210,6 +232,8 @@ def main(argv: list[str] | None = None) -> int:
     ct.add_argument("profile", help="path to a client profile .toml")
     ct.add_argument("--check", action="store_true", help="validate the file only")
     sub.add_parser("revenue-tick", help="run the Revenue Engine once for every business")
+    st = sub.add_parser("sms-test", help="send ONE real test text via the configured provider")
+    st.add_argument("to", help="your own phone number; must be on FLOW_SMS_ALLOWLIST")
     sub.add_parser("approvals", help="list pending approvals")
     for name in ("approve", "reject"):
         s = sub.add_parser(name)
@@ -247,6 +271,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_revenue_tick(args)
     if args.cmd == "check-config":
         return cmd_check_config(args)
+    if args.cmd == "sms-test":
+        return cmd_sms_test(args)
     if args.cmd == "create-admin":
         return cmd_create_admin(args)
     if args.cmd == "approvals":

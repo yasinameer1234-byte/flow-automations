@@ -31,3 +31,24 @@ services:
         generateValue: true
       - key: RETELL_API_KEY
         sync: false
+      # The app's public https URL (e.g. https://flow-automations-demo.onrender.com).
+      # Needed to check Twilio webhook signatures.
+      - key: FLOW_PUBLIC_URL
+        sync: false
+      # Optional: "talk to the real voice agent" button on the demo page.
+      - key: FLOW_RETELL_PUBLIC_KEY
+        sync: false
+      - key: FLOW_RETELL_AGENT_NORTHSIDE
+        sync: false
+      # Optional: real SMS. Until all four are set, every text stays simulated, and outside
+      # production only numbers on FLOW_SMS_ALLOWLIST ever get a real text.
+      - key: FLOW_SMS_PROVIDER
+        value: simulated
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
+        sync: false
+      - key: FLOW_SMS_ALLOWLIST
+        sync: false

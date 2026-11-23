@@ -136,3 +136,16 @@ def test_demo_bookings_expire_after_a_day(monkeypatch):
     assert db.one("SELECT COUNT(*) AS n FROM leads WHERE source_call_id = ?", (cid,))["n"] == 0
     # seeded synthetic history is never touched
     assert db.one("SELECT COUNT(*) AS n FROM calls WHERE channel = 'synthetic_history'")["n"] > 0
+
+
+def test_real_voice_button_only_when_configured(monkeypatch):
+    c = TestClient(make(monkeypatch))
+    assert "retell-btn" not in c.get("/demo/northside").text
+    a = make(
+        monkeypatch,
+        FLOW_RETELL_PUBLIC_KEY="public_key_placeholder",
+        FLOW_RETELL_AGENT_NORTHSIDE="agent_placeholder",
+    )
+    html = TestClient(a).get("/demo/northside").text
+    assert "retell-btn" in html and "agent_placeholder" in html
+    assert TestClient(a).get("/static/vendor/retell-sdk-3.0.3.js").status_code == 200

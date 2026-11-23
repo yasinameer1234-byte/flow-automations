@@ -20,11 +20,13 @@
 | n8n | **Config only** | Optional compose profile; not started or tested |
 | AI Secretary dialogue (browser demo) | **Real code, rule-based** | Deterministic slot filling; not an LLM. Production plan: LLM inside Retell calling our tools |
 | Availability, booking, cancel, reschedule | **Real (local calendar)** | Business hours minus bookings; Google/Microsoft calendars not connected |
-| Voice, phone numbers, call transfer | **Simulated** | Browser speech; transfers recorded, not dialled |
-| Confirmation SMS | **Simulated** | `messages` table |
+| Voice, phone numbers, call transfer | **Simulated** | Browser speech; transfers recorded, not dialled. Retell agent and web-call button built, never run with a real key (see 12) |
+| Confirmation SMS | **Simulated by default; Twilio built** | `messages` table. Real only with Twilio keys, allow-listed numbers outside production (see 12) |
 | Login, roles, tenant isolation, kill switch | **Real (MVP-grade)** | scrypt + signed cookie; move to hosted identity before self-serve |
 | Dashboard metrics | **Real, on synthetic data** | Verified revenue only from jobs marked won |
-| Deployment | **None** | Nothing is hosted anywhere |
+| Deployment | **None** | Nothing is hosted anywhere. `render.yaml` ready (see 12) |
 
 "Tests pass" means the logic is correct against simulated services. It does **not** mean
 production-ready. See the checklist in 04.
+
+Current production-readiness status: [12-production-readiness.md](12-production-readiness.md).

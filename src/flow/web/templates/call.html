@@ -32,6 +32,16 @@
     </div>
   </div>
   <p class="muted small" id="after"></p>
+  {% if retell_web %}
+  <div class="call-card" id="retell-card" style="margin-top:16px;padding:16px">
+    <strong>Talk to the real voice agent</strong>
+    <p class="muted small">This is the same AI receptionist that answers the phone, in your browser (microphone needed). Bookings land in the same calendar and dashboard.</p>
+    <button class="primary" id="retell-btn" type="button">Start voice call</button>
+    <span class="muted small" id="retell-status">Not connected</span>
+  </div>
+  <script>window.FLOW_RETELL = {{ retell_web|tojson }};</script>
+  <script type="module" src="/static/retell_call.js"></script>
+  {% endif %}
 </div>
 <script>window.FLOW_TENANT = {{ tenant.slug|tojson }};</script>
 <script src="/static/call.js"></script>

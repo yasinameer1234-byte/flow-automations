@@ -52,6 +52,24 @@ SECRETS: tuple[SecretSpec, ...] = (
         (),
     ),
     SecretSpec(
+        "FLOW_RETELL_PUBLIC_KEY",
+        "Retell browser key for the 'talk to the real voice agent' demo button",
+        "Retell dashboard > Settings > Public Keys; allow only the app's domain",
+        (),
+    ),
+    SecretSpec(
+        "TWILIO_ACCOUNT_SID",
+        "Real SMS (with FLOW_SMS_PROVIDER=twilio and TWILIO_FROM_NUMBER)",
+        "Twilio console > Account info (a free trial account works for testing)",
+        (),
+    ),
+    SecretSpec(
+        "TWILIO_AUTH_TOKEN",
+        "Sends texts and checks Twilio's webhook signatures",
+        "Twilio console > Account info",
+        (),
+    ),
+    SecretSpec(
         "ANTHROPIC_API_KEY",
         "Claude for message triage and call summaries (not the live call LLM)",
         "console.anthropic.com > API Keys, in a workspace with a spend limit",

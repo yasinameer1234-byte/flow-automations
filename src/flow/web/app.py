@@ -518,7 +518,18 @@ def create_web_app(
                 "for a new one.</p></body>",
                 status_code=403,
             )
-        resp = render(request, "call.html", tenant=t, user=current_user(request))
+        # Real voice agent in the browser (Retell web call): only when both are configured.
+        # The public key is Retell's browser key, limited to our domain in Retell's dashboard.
+        agent_var = "FLOW_RETELL_AGENT_" + slug.upper().replace("-", "_")
+        retell_web = None
+        if os.environ.get("FLOW_RETELL_PUBLIC_KEY") and os.environ.get(agent_var):
+            retell_web = {
+                "public_key": os.environ["FLOW_RETELL_PUBLIC_KEY"],
+                "agent_id": os.environ[agent_var],
+            }
+        resp = render(
+            request, "call.html", tenant=t, user=current_user(request), retell_web=retell_web
+        )
         link = ctx.signer.demo_link_loads(k, slug) if k else None
         if link:  # remember the invite so the page's own API calls are allowed
             resp.set_cookie(
