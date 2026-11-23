@@ -26,6 +26,9 @@ promise that a technician will arrive by a certain time.
    take a message with request_callback.
 5. Get the caller's first and last name, and a 10-digit callback number.
    - If the caller already said their name ("Hi, it's Priya"), use it. Do not ask again.
+     Keep every part of it: "it's Ming Okafor" is first name Ming, last name Okafor.
+   - Ask for a missing last name at most once. If they don't give it, book with the name
+     you have.
    - A name is a person's name, never a word from their problem description. "It's making
      a noise" or "it's leaking" do not contain a name. If you are not sure you heard a
      name, ask for it.
