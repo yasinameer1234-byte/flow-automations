@@ -28,6 +28,27 @@ function draw(turns) {
   transcript.scrollTop = transcript.scrollHeight;
 }
 
+// After the call, ask the server how it went (Retell's record). Fills in the transcript if
+// live updates didn't arrive and says why a call ended early.
+async function review(callId) {
+  try {
+    const r = await fetch(`/api/demo/${encodeURIComponent(cfg.slug)}/voice-call/${encodeURIComponent(callId)}`, { credentials: "same-origin" });
+    if (!r.ok) return;
+    const info = await r.json();
+    console.log("retell call", info.call_status, info.disconnection_reason);
+    if (!transcript.querySelector(".bubble") && info.transcript) {
+      draw(info.transcript.split("\n").filter(Boolean).map((l) => {
+        const m = l.match(/^(Agent|User):\s*(.*)$/);
+        return m ? { role: m[1] === "Agent" ? "agent" : "user", content: m[2] } : { role: "agent", content: l };
+      }));
+    }
+    const normal = ["user_hangup", "agent_hangup", "call_transfer", "voicemail_reached"];
+    if (info.disconnection_reason && !normal.includes(info.disconnection_reason)) {
+      show("Call ended (" + info.disconnection_reason.replace(/_/g, " ") + ")");
+    }
+  } catch (_) {}
+}
+
 async function start() {
   btn.disabled = true; failed = false; after.textContent = "";
   show("Connecting… allow the microphone when asked");
@@ -51,6 +72,7 @@ async function start() {
   client.on("agent_stop_talking", () => { talking.hidden = true; });
   client.on("call_ended", () => {
     const wasLive = live; idle();
+    if (wasLive) setTimeout(() => review(tokens.call_id), 2500);
     if (!failed) {
       show("Call ended");
       if (wasLive) after.innerHTML = 'The call, lead and any booking appear on the <a href="/app">dashboard</a> within a minute (sign in as the business owner).';
