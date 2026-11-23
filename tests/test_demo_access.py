@@ -208,3 +208,11 @@ def test_trusted_client_ip_header_wins(monkeypatch):
         for i in range(12)
     ]
     assert codes[10:] == [429, 429]
+
+
+def test_dashboard_labels_texts_as_simulated(monkeypatch):
+    a = make(monkeypatch)
+    c = TestClient(a)
+    login(c, "owner@northside.example")
+    html = c.get("/app").text
+    assert "simulated (not sent)" in html and "texts sent" not in html
