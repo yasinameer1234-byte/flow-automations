@@ -172,6 +172,24 @@ class FakeRetell:
                 "url": "wss://example.livekit",
                 "agent_id": body["agent_id"],
             }
+        if path.startswith("/v2/list-agents") is False and path.startswith("/get-agent/"):
+            return {"agent_id": path.rsplit("/", 1)[1], "response_engine": {"llm_id": "llm_v"}}
+        if path == "/create-chat-agent":
+            return {"agent_id": "chat_agent_1"}
+        if path == "/create-chat":
+            return {"chat_id": "chat_1"}
+        if path == "/create-chat-completion":
+            return {
+                "messages": [
+                    {
+                        "role": "tool_call_invocation",
+                        "name": "check_availability",
+                        "arguments": "{}",
+                    },
+                    {"role": "tool_call_result", "content": '{"slots": []}'},
+                    {"role": "agent", "content": "Sure, I can help with that."},
+                ]
+            }
         if path.startswith("/v2/get-call/"):
             return {
                 "call_id": "call_1",
@@ -206,7 +224,7 @@ def test_voice_button_only_with_a_server_key(monkeypatch):
     a = voice_app(monkeypatch, FakeRetell())
     html = TestClient(a).get("/demo/northside").text
     assert "retell-btn" in html and "k-test" not in html
-    assert "No microphone? Use the text demo" in html
+    assert "Type to the same AI receptionist" in html
     assert TestClient(a).get("/static/vendor/retell-sdk-3.0.3.js").status_code == 200
     # a business with no receptionist script for its trade gets no voice button
     assert "retell-btn" not in TestClient(a).get("/demo/maple-dental").text
@@ -369,3 +387,22 @@ def test_voice_call_info_comes_from_retell_for_this_business_only(monkeypatch):
     assert "recording_url" not in r.json()
     fake.info_agent = "agent_someone_else"
     assert c.get("/api/demo/northside/voice-call/call_1").status_code == 404
+
+
+def test_agent_chat_shares_the_voice_agents_brain(monkeypatch):
+    fake = FakeRetell()
+    a = voice_app(monkeypatch, fake)
+    c = TestClient(a)
+    r = c.post("/api/demo/northside/agent-chat", json={"content": "My sink is leaking"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["chat_id"] == "chat_1"
+    assert body["messages"][-1] == {"role": "agent", "content": "Sure, I can help with that."}
+    assert body["messages"][0]["name"] == "check_availability"
+    created = [b for _, p, b, _ in fake.calls if p == "/create-chat-agent"][0]
+    assert created["response_engine"] == {"type": "retell-llm", "llm_id": "llm_v"}
+    # the next message continues the same chat, no new agent or chat
+    n = len(fake.calls)
+    c.post("/api/demo/northside/agent-chat", json={"content": "Priya Shah", "chat_id": "chat_1"})
+    assert [p for _, p, _, _ in fake.calls[n:]] == ["/create-chat-completion"]
+    assert c.post("/api/demo/maple-dental/agent-chat", json={"content": "hi"}).status_code == 404

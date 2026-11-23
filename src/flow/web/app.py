@@ -91,6 +91,11 @@ def _fmt_dt(v) -> str:
     return d.strftime("%b %d, %H:%M UTC")
 
 
+class AgentChatIn(BaseModel):
+    content: str
+    chat_id: str | None = None
+
+
 class TurnIn(BaseModel):
     text: str
 
@@ -152,6 +157,7 @@ def create_web_app(
     # Real voice calls spend Retell credit, so they get their own, tighter limits.
     demo_voice_limit = RateLimiter(6, 3600)  # voice calls per address per hour
     demo_voice_daily = RateLimiter(int(os.environ.get("FLOW_VOICE_CALLS_PER_DAY", "40")), 86400)
+    demo_chat_daily = RateLimiter(int(os.environ.get("FLOW_AGENT_CHAT_PER_DAY", "400")), 86400)
     app.state.limits = (
         login_email_limit,
         login_ip_limit,
@@ -707,6 +713,27 @@ def create_web_app(
             raise HTTPException(
                 502, "The voice agent couldn't start. The text demo below still works."
             ) from e
+
+    @app.post("/api/demo/{slug}/agent-chat")
+    def demo_agent_chat(slug: str, body: AgentChatIn, request: Request):
+        """Text with the real voice agent's brain (same Retell prompt and tools)."""
+        tid = _demo_tenant(slug, request, demo_turn_limit)
+        t = store.tenant(tid)
+        trade = VoiceAgents.trade_for(t)
+        if not retell_key or not trade:
+            raise HTTPException(404, "This business has no voice agent.")
+        content = body.content.strip()[:500]
+        if not content:
+            raise HTTPException(422, "say something")
+        if not demo_chat_daily.hit(slug):
+            raise HTTPException(429, "The demo is busy today. Please try again tomorrow.")
+        try:
+            return voice_agents.chat(t, trade, body.chat_id, content)
+        except Exception as e:  # noqa: BLE001
+            AuditLog(db, tid).record(
+                "retell.chat_failed", level="error", error=f"{type(e).__name__}: {e}"[:200]
+            )
+            raise HTTPException(502, "The AI receptionist couldn't answer just now.") from e
 
     @app.get("/api/demo/{slug}/voice-call/{call_id}")
     def demo_voice_call_info(slug: str, call_id: str, request: Request):

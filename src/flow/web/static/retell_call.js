@@ -7,7 +7,7 @@ const cfg = window.FLOW_RETELL;
 const $ = (id) => document.getElementById(id);
 const btn = $("retell-btn"), status = $("retell-status"), talking = $("retell-talking");
 const transcript = $("retell-transcript"), after = $("retell-after");
-let client = null, live = false, failed = false;
+let client = null, live = false, failed = false, heard = false;
 
 function show(text) { status.textContent = text; }
 function idle() {
@@ -64,16 +64,19 @@ async function start() {
   }
   client = new RetellWebClient();
   client.on("call_started", () => {
-    live = true; show("Connected · speak now (you can interrupt)");
+    live = true; heard = false; show("Connecting audio…");
     btn.textContent = "Hang up"; btn.classList.remove("primary"); btn.disabled = false;
   });
-  client.on("update", (e) => draw(e.transcript));
-  client.on("agent_start_talking", () => { talking.hidden = false; });
+  const hear = () => { if (!heard) { heard = true; show("Connected · speak now (you can interrupt)"); } };
+  client.on("update", (e) => { hear(); draw(e.transcript); });
+  client.on("agent_start_talking", () => { hear(); talking.hidden = false; });
   client.on("agent_stop_talking", () => { talking.hidden = true; });
   client.on("call_ended", () => {
     const wasLive = live; idle();
     if (wasLive) setTimeout(() => review(tokens.call_id), 2500);
-    if (!failed) {
+    if (!failed && wasLive && !heard) {
+      show("Couldn't connect the audio. This network may block voice calls: try another network, or use the text demo below.");
+    } else if (!failed) {
       show("Call ended");
       if (wasLive) after.innerHTML = 'The call, lead and any booking appear on the <a href="/app">dashboard</a> within a minute (sign in as the business owner).';
     }
@@ -99,5 +102,29 @@ async function start() {
 btn.addEventListener("click", () => {
   if (client) { btn.disabled = true; client.stopCall(); return; }
   start();
+});
+// Typing: the same Retell prompt and tools, as a text chat (no microphone needed).
+let chatId = null, chatTurns = [];
+const chatForm = $("chat-form"), chatSay = $("chat-say"), chatSend = $("chat-send");
+chatForm.addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const text = chatSay.value.trim();
+  if (!text || client) return;
+  chatSay.value = ""; chatSend.disabled = true;
+  if (!chatTurns.length) transcript.innerHTML = "";
+  chatTurns.push({ role: "user", content: text }); draw(chatTurns);
+  show("The receptionist is typing…");
+  try {
+    const r = await fetch(`/api/demo/${encodeURIComponent(cfg.slug)}/agent-chat`, {
+      method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: text, chat_id: chatId }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.detail || `HTTP ${r.status}`);
+    chatId = j.chat_id;
+    for (const m of j.messages) if (m.role === "agent" && m.content) chatTurns.push(m);
+    draw(chatTurns); show("Text chat with the AI receptionist");
+  } catch (err) { show("Couldn't send: " + (err.message || err)); }
+  chatSend.disabled = false; chatSay.focus();
 });
 document.documentElement.dataset.retellReady = "1";
