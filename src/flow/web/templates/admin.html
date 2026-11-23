@@ -26,6 +26,23 @@
 </tr>{% endfor %}
 </tbody></table></div>
 
+<h2>Voice agents (Retell)</h2>
+<div class="panel">
+<p class="small muted">Retell API key on the server: <strong>{{ 'set' if retell_ready else 'not set' }}</strong>.
+Browser test button (needs FLOW_RETELL_PUBLIC_KEY): <strong>{{ 'on' if retell_public else 'off' }}</strong>.
+Setting up an agent is free and never buys a phone number.</p>
+<table><thead><tr><th>Business</th><th>Voice agent</th><th>Set up</th></tr></thead><tbody>
+{% for r in rows %}<tr data-retell="{{ r.t.slug }}"><td>{{ r.t.name }}</td>
+<td class="small">{% if r.t.retell_agent_id %}<code>{{ r.t.retell_agent_id }}</code>{% else %}<span class="muted">none</span>{% endif %}</td>
+<td>{% if retell_ready %}<form method="post" action="/admin/tenants/{{ r.t.id }}/retell-agent" class="inline">
+<input type="hidden" name="csrf" value="{{ user.csrf }}">
+<select name="trade"><option value="plumbing">Plumbing/heating</option><option value="hvac">HVAC</option><option value="electrical">Electrical</option></select>
+<input type="text" name="area" value="Toronto and the GTA" maxlength="80">
+{% if r.t.retell_agent_id %}<input type="hidden" name="replace" value="1">{% endif %}
+<button type="submit">{{ 'Replace agent' if r.t.retell_agent_id else 'Set up voice agent' }}</button>
+</form>{% else %}<span class="muted small">add RETELL_API_KEY on the server first</span>{% endif %}</td></tr>{% endfor %}
+</tbody></table></div>
+
 <h2>Demo links for prospects</h2>
 <div class="panel">
 <p class="small muted">Demo access: <strong>{{ demo_access }}</strong>.

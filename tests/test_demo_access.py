@@ -149,3 +149,62 @@ def test_real_voice_button_only_when_configured(monkeypatch):
     html = TestClient(a).get("/demo/northside").text
     assert "retell-btn" in html and "agent_placeholder" in html
     assert TestClient(a).get("/static/vendor/retell-sdk-3.0.3.js").status_code == 200
+
+
+def test_admin_sets_up_a_retell_agent_with_the_servers_key(monkeypatch):
+    a = make(monkeypatch, RETELL_API_KEY="k-test", FLOW_PUBLIC_URL="https://flow.example")
+    calls = []
+
+    def fake_post(path, body, key):
+        calls.append((path, body, key))
+        return {"llm_id": "llm_1"} if path == "/create-retell-llm" else {"agent_id": "agent_1"}
+
+    a.state.retell_poster = fake_post
+    c = TestClient(a)
+    login(c)
+    csrf = re.search(r'name="csrf" value="([^"]+)"', c.get("/admin").text).group(1)
+    tid = a.state.db.one("SELECT id FROM tenants WHERE slug = 'northside'")["id"]
+    r = c.post(
+        f"/admin/tenants/{tid}/retell-agent",
+        data={"trade": "plumbing", "area": "Toronto", "csrf": csrf},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert [p for p, _, _ in calls] == ["/create-retell-llm", "/create-agent"]
+    assert calls[0][2] == "k-test"
+    tools = calls[0][1]["general_tools"]
+    assert tools[0]["url"].startswith("https://flow.example/voice/northside/tools/")
+    assert "agent_1" in c.get("/admin").text
+    # a second click doesn't silently create another agent
+    r = c.post(f"/admin/tenants/{tid}/retell-agent", data={"csrf": csrf}, follow_redirects=False)
+    assert r.status_code == 409
+    # the agent id feeds the browser voice button once a public key exists
+    monkeypatch.setenv("FLOW_RETELL_PUBLIC_KEY", "public_key_placeholder")
+    assert "agent_1" in TestClient(a).get("/demo/northside").text
+
+
+def test_retell_setup_needs_admin_and_key(monkeypatch):
+    a = make(monkeypatch)
+    c = TestClient(a)
+    tid = a.state.db.one("SELECT id FROM tenants WHERE slug = 'northside'")["id"]
+    r = c.post(f"/admin/tenants/{tid}/retell-agent", data={}, follow_redirects=False)
+    assert r.status_code in (302, 303, 401, 403)
+    login(c)
+    csrf = re.search(r'name="csrf" value="([^"]+)"', c.get("/admin").text).group(1)
+    r = c.post(f"/admin/tenants/{tid}/retell-agent", data={"csrf": csrf})
+    assert r.status_code == 503
+
+
+def test_trusted_client_ip_header_wins(monkeypatch):
+    a = make(monkeypatch, FLOW_CLIENT_IP_HEADER="cf-connecting-ip", FLOW_PROXY_HOPS="1")
+    c = TestClient(a)
+    h = {"cf-connecting-ip": "203.0.113.7", "x-forwarded-for": "1.2.3.4, 10.0.0.1"}
+    assert c.get("/whoami", headers=h).json()["seen_as"] == "203.0.113.7"
+    codes = [
+        c.post(
+            "/api/demo/northside/calls",
+            headers={"cf-connecting-ip": "203.0.113.7", "x-forwarded-for": f"9.9.9.{i}"},
+        ).status_code
+        for i in range(12)
+    ]
+    assert codes[10:] == [429, 429]

@@ -17,6 +17,9 @@ def init_platform_schema(db: Database) -> None:
     cols = {r["name"] for r in db.query("PRAGMA table_info(tenants)")}
     if "is_demo" not in cols:
         db.execute("ALTER TABLE tenants ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0")
+    for col in ("retell_agent_id", "retell_llm_id"):
+        if col not in cols:
+            db.execute(f"ALTER TABLE tenants ADD COLUMN {col} TEXT")  # noqa: S608 (fixed names)
     mcols = {r["name"] for r in db.query("PRAGMA table_info(messages)")}
     for col in ("provider", "provider_id", "error", "updated_at"):
         if col not in mcols:
