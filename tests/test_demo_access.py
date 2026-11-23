@@ -152,8 +152,13 @@ class FakeRetell:
             from flow.voice.agent import RetellError
 
             raise RetellError(f"Retell {method} {path} -> HTTP 500")
-        if path == "/list-agents":
-            return self.agents
+        if path.startswith("/v2/list-agents"):
+            assert method == "POST"
+            q = body["filter_criteria"]["query"]
+            return {
+                "items": [a for a in self.agents if q.lower() in a["agent_name"].lower()],
+                "has_more": False,
+            }
         if path == "/create-retell-llm":
             return {"llm_id": "llm_new"}
         if path == "/create-agent":
@@ -203,17 +208,17 @@ def test_voice_call_reuses_the_agent_already_in_retell(monkeypatch):
             {
                 "agent_id": "agent_old",
                 "agent_name": "Northside Plumbing & Heating receptionist",
-                "last_modification_timestamp": 1,
+                "user_modified_timestamp": 1,
             },
             {
                 "agent_id": "agent_admin",
                 "agent_name": "Northside Plumbing & Heating receptionist",
-                "last_modification_timestamp": 5,
+                "user_modified_timestamp": 5,
             },
             {
                 "agent_id": "agent_other",
                 "agent_name": "Someone else",
-                "last_modification_timestamp": 9,
+                "user_modified_timestamp": 9,
             },
         ]
     )
@@ -224,7 +229,7 @@ def test_voice_call_reuses_the_agent_already_in_retell(monkeypatch):
     body = r.json()
     assert body["access_token"] == "tok_1" and body["transport"] == "livekit"
     assert "agent_id" not in body and "k-test" not in r.text
-    assert fake.paths() == ["/list-agents", "/v3/create-web-call"]  # no new agent
+    assert fake.paths() == ["/v2/list-agents?limit=1000", "/v3/create-web-call"]  # no new agent
     assert fake.calls[1][2]["agent_id"] == "agent_admin"  # the newest match
     assert fake.calls[1][3] == "k-test"
     # the id is remembered: the next call skips the lookup
@@ -239,7 +244,7 @@ def test_voice_call_creates_the_agent_when_none_exists(monkeypatch):
     r = TestClient(a).post("/api/demo/northside/voice-call")
     assert r.status_code == 200
     assert fake.paths() == [
-        "/list-agents",
+        "/v2/list-agents?limit=1000",
         "/create-retell-llm",
         "/create-agent",
         "/v3/create-web-call",
