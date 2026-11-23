@@ -22,6 +22,8 @@ from pydantic import BaseModel
 from ..core.audit import AuditLog, configure_logging
 from ..core.db import Database
 from ..deploy import check_required, current_env
+from ..revenue.engine import RevenueEngine
+from ..revenue.playbooks import PLAYBOOKS
 from ..secretary.availability import is_open
 from ..secretary.calls import CallError, CallService
 from ..secretary.metrics import tenant_metrics
@@ -31,6 +33,7 @@ from ..secretary.store import Store
 from ..secretary.tools import SecretaryTools, ToolError, format_phone
 from ..voice.retell import RetellWebhook, verify_signature
 from .auth import SESSION_COOKIE, SessionSigner, hash_password, verify_password
+from .ratelimit import RateLimiter
 
 HERE = Path(__file__).parent
 
@@ -42,6 +45,20 @@ class WebContext:
     calls: CallService
     signer: SessionSigner
     clock: object
+
+
+# Browser-demo calls older than a cutoff, children first. Each takes (tenant_id, cutoff).
+_PURGE_DEMO_SQL = (
+    "DELETE FROM appointments WHERE source_call_id IN (SELECT id FROM calls WHERE "
+    "tenant_id = ? AND channel = 'browser_demo' AND started_at < ?)",
+    "DELETE FROM tasks WHERE lead_id IN (SELECT id FROM leads WHERE source_call_id IN "
+    "(SELECT id FROM calls WHERE tenant_id = ? AND channel = 'browser_demo' AND started_at < ?))",
+    "DELETE FROM leads WHERE source_call_id IN (SELECT id FROM calls WHERE "
+    "tenant_id = ? AND channel = 'browser_demo' AND started_at < ?)",
+    "DELETE FROM call_turns WHERE call_id IN (SELECT id FROM calls WHERE "
+    "tenant_id = ? AND channel = 'browser_demo' AND started_at < ?)",
+    "DELETE FROM calls WHERE tenant_id = ? AND channel = 'browser_demo' AND started_at < ?",
+)
 
 
 def _fmt_money(v) -> str:
@@ -70,6 +87,11 @@ def _fmt_dt(v) -> str:
 
 
 class TurnIn(BaseModel):
+    text: str
+
+
+class SmsIn(BaseModel):
+    from_number: str
     text: str
 
 
@@ -106,12 +128,45 @@ def create_web_app(
         )
     secure_cookies = hosted or os.environ.get("FLOW_SECURE_COOKIES") == "1"
     ctx = WebContext(db, store, CallService(db, store, clock=clock), SessionSigner(secret), clock)
+    revenue = RevenueEngine(db, store, clock=clock)
 
     app = FastAPI(title="Flow Automations", version="0.2.0", docs_url="/api/docs")
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.filters.update(money=_fmt_money, phone=_fmt_phone, dt=_fmt_dt, local=_fmt_local)
     app.state.ctx = ctx
+    app.state.revenue = revenue
+
+    # ------------------------------------------------------------------ abuse limits
+    login_email_limit = RateLimiter(5, 15 * 60)  # failed logins per account
+    login_ip_limit = RateLimiter(20, 15 * 60)  # failed logins per address
+    demo_call_limit = RateLimiter(10, 3600)  # demo calls per address per hour
+    demo_turn_limit = RateLimiter(120, 600)  # demo messages per address per 10 minutes
+    demo_sms_limit = RateLimiter(20, 3600)
+    demo_daily_limit = RateLimiter(int(os.environ.get("FLOW_DEMO_CALLS_PER_DAY", "300")), 86400)
+    app.state.limits = (login_email_limit, login_ip_limit, demo_call_limit, demo_daily_limit)
+
+    # Behind a proxy (Render), the caller's address is the entry that the LAST trusted proxy
+    # appended to X-Forwarded-For: FLOW_PROXY_HOPS entries from the right. The left-most
+    # entry is whatever the caller typed, so trusting it would let anyone dodge the limits.
+    proxy_hops = int(os.environ.get("FLOW_PROXY_HOPS", "0"))
+
+    def client_ip(request: Request) -> str:
+        if proxy_hops > 0:
+            hops = [h.strip() for h in request.headers.get("x-forwarded-for", "").split(",")]
+            hops = [h for h in hops if h]
+            if len(hops) >= proxy_hops:
+                return hops[-proxy_hops]
+        peer = request.scope.get("client")
+        return peer[0] if peer else "unknown"
+
+    # ------------------------------------------------------------------ demo access
+    # "public": anyone with the URL can try the demo business (local development).
+    # "invite": hosted default. The page needs a signed, expiring link made in /admin, or a
+    # signed-in admin / owner of that demo business. Real clients never have a demo page.
+    demo_access = os.environ.get("FLOW_DEMO_ACCESS") or ("public" if env == "local" else "invite")
+    demo_retention_hours = float(os.environ.get("FLOW_DEMO_RETENTION_HOURS", "24"))
+    DEMO_COOKIE = "flow_demo"
 
     # ------------------------------------------------------------------ auth helpers
     def current_user(request: Request) -> dict | None:
@@ -167,11 +222,26 @@ def create_web_app(
 
     @app.post("/login", include_in_schema=False)
     def login(request: Request, email: str = Form(...), password: str = Form(...)):
-        user = db.one("SELECT * FROM users WHERE email = ?", (email.strip().lower(),))
+        email = email.strip().lower()
+        ip = client_ip(request)
+        if login_email_limit.blocked(email) or login_ip_limit.blocked(ip):
+            AuditLog(db, "platform").record("auth.login_throttled", level="warning", email=email)
+            resp = render(
+                request,
+                "login.html",
+                error="Too many attempts. Please wait 15 minutes and try again.",
+                user=None,
+            )
+            resp.status_code = 429
+            return resp
+        user = db.one("SELECT * FROM users WHERE email = ?", (email,))
         audit = AuditLog(db, user["tenant_id"] or "platform" if user else "platform")
         if not user or not verify_password(password, user["password_hash"]):
+            login_email_limit.hit(email)
+            login_ip_limit.hit(ip)
             audit.record("auth.login_failed", level="warning", email=email)
             return render(request, "login.html", error="Wrong email or password.", user=None)
+        login_email_limit.reset(email)
         audit.record("auth.login", actor=f"user:{user['email']}")
         resp = RedirectResponse("/", 303)
         resp.set_cookie(
@@ -287,6 +357,69 @@ def create_web_app(
         suffix = f"?tenant={tid}" if user["role"] == "platform_admin" else ""
         return RedirectResponse(f"/app/leads{suffix}", 303)
 
+    # ------------------------------------------------------------------ revenue engine
+    @app.get("/app/revenue", response_class=HTMLResponse, include_in_schema=False)
+    def revenue_page(
+        request: Request, tenant: str | None = None, user: dict = Depends(require_user)
+    ):
+        tid = resolve_tenant(user, tenant)
+        revenue.tick(tid)  # catch up on anything due before showing the page
+        enrollments = db.query(
+            "SELECT * FROM enrollments WHERE tenant_id = ? ORDER BY updated_at DESC LIMIT 25",
+            (tid,),
+        )
+        outbox = db.query(
+            "SELECT m.* FROM messages m WHERE m.tenant_id = ? AND m.purpose = 'follow_up' "
+            "ORDER BY m.id DESC LIMIT 15",
+            (tid,),
+        )
+        return render(
+            request,
+            "revenue.html",
+            user=user,
+            tenant=store.tenant(tid),
+            included=revenue.included(tid),
+            enabled=store.automation_enabled(tid, "revenue_engine"),
+            playbooks=revenue.playbook_status(tid),
+            r=revenue.results(tid),
+            enrollments=enrollments,
+            outbox=outbox,
+            settings=revenue.settings(tid),
+            labels={k: p.title for k, p in PLAYBOOKS.items()},
+            tz=store.profile(tid).timezone,
+        )
+
+    @app.post("/app/revenue/playbooks/{key}", include_in_schema=False)
+    def revenue_playbook(
+        key: str,
+        action: str = Form(...),
+        csrf: str = Form(""),
+        tenant: str | None = Form(None),
+        user: dict = Depends(require_user),
+    ):
+        check_csrf(user, csrf)
+        if user["role"] not in ("owner", "platform_admin"):
+            raise HTTPException(403, "only the business owner can approve messages")
+        tid = resolve_tenant(user, tenant)
+        if key not in PLAYBOOKS or action not in ("approve", "pause"):
+            raise HTTPException(404, "unknown playbook")
+        if not revenue.included(tid):
+            raise HTTPException(403, "the Revenue Engine is not in this package")
+        actor = f"user:{user['email']}"
+        if action == "approve":
+            revenue.approve(tid, key, actor)
+            revenue.tick(tid)  # enrol matching people right away; sends follow their delays
+        else:
+            revenue.revoke(tid, key, actor)
+        suffix = f"?tenant={tid}" if user["role"] == "platform_admin" else ""
+        return RedirectResponse(f"/app/revenue{suffix}", 303)
+
+    @app.post("/api/demo/{slug}/sms")
+    def demo_inbound_sms(slug: str, body: SmsIn, request: Request):
+        """Simulated inbound text (a customer replying to a follow-up). Demo businesses only."""
+        tid = _demo_tenant(slug, request, demo_sms_limit)
+        return revenue.inbound_sms(tid, body.from_number, body.text)
+
     @app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
     def admin(request: Request, user: dict = Depends(require_admin)):
         rows = []
@@ -306,7 +439,40 @@ def create_web_app(
         mrr = sum(
             PACKAGES[r["t"]["package"]]["monthly_cad"] for r in rows if r["t"]["status"] == "active"
         )
-        return render(request, "admin.html", user=user, rows=rows, errors=errors, mrr=mrr)
+        return render(
+            request,
+            "admin.html",
+            user=user,
+            rows=rows,
+            errors=errors,
+            mrr=mrr,
+            demo_access=demo_access,
+            seen_ip=client_ip(request),
+            demo_link=request.query_params.get("demo_link"),
+        )
+
+    @app.post("/admin/demo-links", include_in_schema=False)
+    def create_demo_link(
+        request: Request,
+        slug: str = Form(...),
+        hours: float = Form(72),
+        label: str = Form(""),
+        csrf: str = Form(""),
+        user: dict = Depends(require_admin),
+    ):
+        check_csrf(user, csrf)
+        t = store.tenant_by_slug(slug)
+        if not t or not t["is_demo"]:
+            raise HTTPException(404, "demo links are only for demo businesses")
+        hours = min(max(hours, 1), 24 * 14)
+        token = ctx.signer.demo_link_token(slug, hours, label)
+        AuditLog(db, t["id"]).record(
+            "demo.link_created", actor=f"user:{user['email']}", hours=hours, label=label[:60]
+        )
+        from urllib.parse import quote
+
+        url = f"{str(request.base_url).rstrip('/')}/demo/{slug}?k={quote(token)}"
+        return RedirectResponse(f"/admin?demo_link={quote(url)}", 303)
 
     @app.post("/admin/tenants/{tenant_id}/automations/{key}", include_in_schema=False)
     def toggle_automation(
@@ -317,7 +483,11 @@ def create_web_app(
         user: dict = Depends(require_admin),
     ):
         check_csrf(user, csrf)
-        if not store.tenant(tenant_id) or key not in ("ai_secretary", "booking_confirmations"):
+        if not store.tenant(tenant_id) or key not in (
+            "ai_secretary",
+            "booking_confirmations",
+            "revenue_engine",
+        ):
             raise HTTPException(404, "unknown automation")
         store.set_automation(tenant_id, key, enabled == "1", user["email"])
         AuditLog(db, tenant_id).record(
@@ -326,37 +496,95 @@ def create_web_app(
         return RedirectResponse("/admin", 303)
 
     # ------------------------------------------------------------------ browser call demo
-    @app.get("/demo/{slug}", response_class=HTMLResponse, include_in_schema=False)
-    def demo_page(request: Request, slug: str):
-        t = store.tenant_by_slug(slug)
-        if not t:
-            raise HTTPException(404, "unknown business")
-        return render(request, "call.html", tenant=t, user=current_user(request))
+    def demo_allowed(request: Request, t: dict, token: str | None = None) -> bool:
+        if demo_access == "public":
+            return True
+        user = current_user(request)
+        if user and (user["role"] == "platform_admin" or user["tenant_id"] == t["id"]):
+            return True
+        token = token or request.cookies.get(DEMO_COOKIE)
+        return ctx.signer.demo_link_loads(token, t["slug"]) is not None
 
-    def _demo_tenant(slug: str) -> str:
+    @app.get("/demo/{slug}", response_class=HTMLResponse, include_in_schema=False)
+    def demo_page(request: Request, slug: str, k: str | None = None):
         t = store.tenant_by_slug(slug)
-        if not t:
+        if not t or not t["is_demo"]:  # real clients never get a public demo page
             raise HTTPException(404, "unknown business")
+        if not demo_allowed(request, t, token=k):
+            return HTMLResponse(
+                "<!doctype html><title>Demo link needed</title><body style='font-family:"
+                "system-ui;max-width:32rem;margin:4rem auto;padding:0 1rem'><h1>This demo "
+                "needs an invite link</h1><p>The link may have expired. Ask Flow Automations "
+                "for a new one.</p></body>",
+                status_code=403,
+            )
+        # Real voice agent in the browser (Retell web call): only when both are configured.
+        # The public key is Retell's browser key, limited to our domain in Retell's dashboard.
+        agent_var = "FLOW_RETELL_AGENT_" + slug.upper().replace("-", "_")
+        retell_web = None
+        if os.environ.get("FLOW_RETELL_PUBLIC_KEY") and os.environ.get(agent_var):
+            retell_web = {
+                "public_key": os.environ["FLOW_RETELL_PUBLIC_KEY"],
+                "agent_id": os.environ[agent_var],
+            }
+        resp = render(
+            request, "call.html", tenant=t, user=current_user(request), retell_web=retell_web
+        )
+        link = ctx.signer.demo_link_loads(k, slug) if k else None
+        if link:  # remember the invite so the page's own API calls are allowed
+            resp.set_cookie(
+                DEMO_COOKIE,
+                k,
+                max_age=max(60, int(link["exp"] - datetime.now(UTC).timestamp())),
+                httponly=True,
+                samesite="lax",
+                secure=env != "local",
+            )
+        return resp
+
+    def purge_old_demo_calls(tenant_id: str) -> None:
+        """Browser-demo bookings expire, so strangers can't fill the demo calendar for good."""
+        cutoff = datetime.fromtimestamp(
+            clock().timestamp() - demo_retention_hours * 3600, UTC
+        ).isoformat()
+        args = (tenant_id, cutoff)
+        for sql in _PURGE_DEMO_SQL:
+            db.execute(sql, args)
+
+    def _demo_tenant(slug: str, request: Request | None = None, limiter=None) -> str:
+        t = store.tenant_by_slug(slug)
+        if not t or not t["is_demo"]:
+            raise HTTPException(404, "unknown business")
+        if request is not None and not demo_allowed(request, t):
+            raise HTTPException(403, "This demo needs an invite link.")
+        if request is not None and limiter is not None:
+            if not limiter.hit(f"{client_ip(request)}|{slug}"):
+                raise HTTPException(429, "Too many demo requests. Please try again later.")
         return t["id"]
 
     @app.post("/api/demo/{slug}/calls")
-    def demo_start(slug: str):
+    def demo_start(slug: str, request: Request):
+        tid = _demo_tenant(slug, request, demo_call_limit)
+        purge_old_demo_calls(tid)
+        if not demo_daily_limit.hit(slug):
+            raise HTTPException(429, "The demo line is busy today. Please try again tomorrow.")
         try:
-            return ctx.calls.start(_demo_tenant(slug), channel="browser_demo")
+            return ctx.calls.start(tid, channel="browser_demo")
         except CallError as e:
             raise HTTPException(409, str(e)) from e
 
     @app.post("/api/demo/{slug}/calls/{call_id}/turn")
-    def demo_turn(slug: str, call_id: str, body: TurnIn):
+    def demo_turn(slug: str, call_id: str, body: TurnIn, request: Request):
+        tid = _demo_tenant(slug, request, demo_turn_limit)
         try:
-            return ctx.calls.turn(_demo_tenant(slug), call_id, body.text)
+            return ctx.calls.turn(tid, call_id, body.text)
         except CallError as e:
             raise HTTPException(409, str(e)) from e
 
     @app.post("/api/demo/{slug}/calls/{call_id}/end")
-    def demo_end(slug: str, call_id: str):
+    def demo_end(slug: str, call_id: str, request: Request):
         try:
-            c = ctx.calls.end(_demo_tenant(slug), call_id)
+            c = ctx.calls.end(_demo_tenant(slug, request), call_id)
         except CallError as e:
             raise HTTPException(404, str(e)) from e
         return {
@@ -365,6 +593,54 @@ def create_web_app(
             "summary": c["summary"],
             "billed_minutes": c["billed_minutes"],
         }
+
+    # ------------------------------------------------------------------ SMS provider webhooks
+    # Twilio calls these. Both check Twilio's signature against FLOW_PUBLIC_URL + the path,
+    # because behind a proxy the URL the app sees is not the one Twilio signed.
+    async def twilio_form(request: Request) -> dict:
+        sender = revenue.sms
+        if sender.name != "twilio":
+            raise HTTPException(503, "Twilio is not configured")
+        params = {k: str(v) for k, v in (await request.form()).items()}
+        public = os.environ.get("FLOW_PUBLIC_URL", "").rstrip("/")
+        url = (public + request.url.path) if public else str(request.url)
+        if request.url.query:
+            url += "?" + request.url.query
+        if not sender.valid_signature(url, params, request.headers.get("x-twilio-signature")):
+            raise HTTPException(403, "bad signature")
+        return params
+
+    @app.post("/sms/twilio/status", include_in_schema=False)
+    async def twilio_status(request: Request):
+        """Delivery receipts: the only proof a text actually reached the phone."""
+        p = await twilio_form(request)
+        status = {"delivered": "delivered", "undelivered": "undelivered", "failed": "failed"}.get(
+            p.get("MessageStatus", ""), None
+        )
+        if status and p.get("MessageSid"):
+            err = p.get("ErrorCode")
+            db.execute(
+                "UPDATE messages SET status = ?, error = COALESCE(?, error), updated_at = ? "
+                "WHERE provider = 'twilio' AND provider_id = ?",
+                (
+                    status,
+                    f"Twilio error {err}" if err else None,
+                    clock().isoformat(),
+                    p["MessageSid"],
+                ),
+            )
+        return Response(status_code=204)
+
+    @app.post("/sms/twilio/inbound/{slug}", include_in_schema=False)
+    async def twilio_inbound(slug: str, request: Request):
+        """A customer texts the business: STOP/START, C to cancel, or a reply to a follow-up."""
+        p = await twilio_form(request)
+        t = store.tenant_by_slug(slug)
+        if not t or t["status"] != "active":
+            raise HTTPException(404, "unknown business")
+        revenue.inbound_sms(t["id"], p.get("From", ""), p.get("Body", ""))
+        # Empty TwiML: any reply text is sent by our own outbox, not by Twilio.
+        return Response("<Response/>", media_type="application/xml")
 
     # ------------------------------------------------------------------ voice agent tools
     # Shaped for Retell custom functions: POST {"name", "args", "call"}. Auth by tenant key.
@@ -462,8 +738,8 @@ def create_web_app(
                     "UPDATE appointments SET lead_id = ? WHERE id = ? AND tenant_id = ?",
                     (lead_id, booked["appointment_id"], tenant_id),
                 )
-                tools.send_confirmation(booked["appointment_id"], call_id=call_ref)
-                return {**booked, "lead_id": lead_id}
+                sms = tools.send_confirmation(booked["appointment_id"], call_id=call_ref)
+                return {**booked, "lead_id": lead_id, "confirmation_text_sent": sms == "sent"}
             if tool == "answer_question":
                 return tools.answer_question(args["question"], call_id=call_ref)
             if tool == "transfer_call":

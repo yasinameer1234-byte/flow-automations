@@ -28,7 +28,7 @@ def tenant_metrics(
     total = scalar("SELECT COUNT(*) FROM calls WHERE tenant_id = ? AND started_at >= ?")
     missed = scalar(
         "SELECT COUNT(*) FROM calls WHERE tenant_id = ? AND started_at >= ? "
-        "AND outcome = 'disabled'"
+        "AND outcome IN ('disabled', 'abandoned')"
     )
     after_hours = scalar(
         "SELECT COUNT(*) FROM calls WHERE tenant_id = ? AND started_at >= ? "
@@ -43,7 +43,7 @@ def tenant_metrics(
     )
     messages = scalar(
         "SELECT COUNT(*) FROM messages WHERE tenant_id = ? AND created_at >= ? "
-        "AND status = 'sent_simulated'"
+        "AND status IN ('sent_simulated', 'sent', 'delivered')"
     )
     callbacks = scalar(
         "SELECT COUNT(*) FROM calls WHERE tenant_id = ? AND started_at >= ? "

@@ -187,6 +187,8 @@ def agent_payload(base: str, slug: str, business: str, llm_id: str) -> dict:
         "language": "en-US",  # Retell has no en-CA; en-US handles Canadian callers
         "webhook_url": f"{base}/voice/webhooks/retell/{slug}",
         "webhook_events": ["call_started", "call_ended", "call_analyzed"],
+        # Caps what one call can spend from the credit (a stuck or abusive web call).
+        "max_call_duration_ms": 10 * 60 * 1000,
     }
 
 

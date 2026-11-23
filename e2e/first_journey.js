@@ -72,6 +72,18 @@ const caller = "Jordan " + ["Quill", "Brook", "Ashford", "Lane", "Fenwick"][Date
   step("job marked won at $880 (verified revenue)");
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/3-leads.png`, fullPage: true });
 
+  // 3b. Revenue Engine: nothing goes out until the owner approves the wording.
+  await page.click("text=Revenue Engine");
+  const pb = page.locator("[data-playbook=reactivation]");
+  assert.match(await pb.textContent(), /waiting for your approval/);
+  await pb.locator("button[value=approve]").click();
+  await page.waitForURL(/\/app\/revenue/);
+  assert.match(await page.locator("[data-playbook=reactivation]").textContent(), /approved/);
+  const seqs = await page.locator("table").first().textContent();
+  assert.match(seqs, /Past-customer reminder/);
+  step("owner approves a Revenue Engine playbook and past customers are enrolled");
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/5-revenue.png`, fullPage: true });
+
   // 4. Tenant isolation: this owner cannot open the other business.
   const resp = await page.goto(`${BASE}/app?tenant=t_maple`);
   assert.strictEqual(resp.status(), 403);

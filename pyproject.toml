@@ -26,7 +26,7 @@ flow = "flow.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-flow = ["web/templates/*.html", "web/static/*"]
+flow = ["web/templates/*.html", "web/static/*", "web/static/vendor/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -15,6 +15,7 @@
     {% set q = '?tenant=' ~ tenant.id if user.role == 'platform_admin' else '' %}
     <a href="/app{{ q }}">Dashboard</a>
     <a href="/app/leads{{ q }}">Leads</a>
+    <a href="/app/revenue{{ q }}">Revenue Engine</a>
     <a href="/demo/{{ tenant.slug }}" target="_blank">Try a call</a>
     {% endif %}
   </nav>

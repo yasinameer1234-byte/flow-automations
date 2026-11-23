@@ -74,3 +74,6 @@ templates. The engine and components stay the same.
 7. [Test results](docs/07-test-results.md)
 8. [Blockers and next actions](docs/08-blockers-and-next-actions.md)
 9. [AI Secretary demo](docs/09-ai-secretary-demo.md)
+10. [Go-live and onboarding](docs/10-go-live-and-onboarding.md)
+11. [Revenue Engine](docs/11-revenue-engine.md)
+12. [Production readiness: real vs simulated, Render/Retell/SMS checklists](docs/12-production-readiness.md)

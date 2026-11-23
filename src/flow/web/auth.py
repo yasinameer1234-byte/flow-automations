@@ -69,3 +69,27 @@ class SessionSigner:
 
     def csrf_token(self, session: dict) -> str:
         return self._sig(f"csrf:{session['uid']}:{session['csrf']}")[:32]
+
+    # ---------------------------------------------------------------- demo invite links
+    # Signed with a "demo:" prefix so a demo link can never be replayed as a session cookie.
+    def demo_link_token(self, slug: str, hours: float, label: str = "") -> str:
+        payload = base64.urlsafe_b64encode(
+            json.dumps(
+                {"demo": slug, "exp": int(time.time() + hours * 3600), "label": label[:60]}
+            ).encode()
+        ).decode()
+        return f"{payload}.{self._sig('demo:' + payload)}"
+
+    def demo_link_loads(self, token: str | None, slug: str) -> dict | None:
+        if not token or "." not in token:
+            return None
+        payload, sig = token.rsplit(".", 1)
+        if not hmac.compare_digest(sig, self._sig("demo:" + payload)):
+            return None
+        try:
+            data = json.loads(base64.urlsafe_b64decode(payload.encode()))
+        except ValueError:
+            return None
+        if data.get("demo") != slug or data.get("exp", 0) <= time.time():
+            return None
+        return data

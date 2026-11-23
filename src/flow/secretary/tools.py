@@ -12,6 +12,7 @@ policies:
 
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 from collections.abc import Callable
@@ -20,8 +21,9 @@ from zoneinfo import ZoneInfo
 
 from ..core.audit import AuditLog
 from ..core.db import Database
-from ..core.models import utcnow
+from ..integrations.sms import sms_from_env
 from .availability import Slot, available_slots, parse_slot_id
+from .nlu import plausible_name
 from .store import Store
 
 Clock = Callable[[], datetime]
@@ -72,7 +74,10 @@ class ToolError(Exception):
 
 
 class SecretaryTools:
-    def __init__(self, db: Database, store: Store, tenant_id: str, clock: Clock | None = None):
+    def __init__(
+        self, db: Database, store: Store, tenant_id: str, clock: Clock | None = None, sms=None
+    ):
+        self.sms = sms or sms_from_env()
         self.db = db
         self.store = store
         self.tenant_id = tenant_id
@@ -96,6 +101,10 @@ class SecretaryTools:
         return next(s for s in self.store.services(self.tenant_id) if s["bookable"])
 
     def answer_question(self, question: str, call_id: str | None = None) -> dict:
+        hours = self._hours_answer(question)
+        if hours:  # built from the business profile, never invented
+            self.audit.record("tool.answer_question", run_id=call_id, matched=True, entry_id=None)
+            return {"answer": hours, "entry_id": None}
         q = set(_WORD.findall(question.lower())) - _STOP
         best, score = None, 0
         for e in self.store.knowledge(self.tenant_id, approved_only=True):
@@ -112,6 +121,64 @@ class SecretaryTools:
             "answer": best["answer"] if best else None,
             "entry_id": best["id"] if best else None,
         }
+
+    _HOURS_Q = re.compile(
+        r"\b(hours|open|close|closed|weekends?|saturdays?|sundays?|what time)\b", re.I
+    )
+
+    def _hours_answer(self, question: str) -> str | None:
+        if not self._HOURS_Q.search(question):
+            return None
+        names = {
+            "mon": "Monday",
+            "tue": "Tuesday",
+            "wed": "Wednesday",
+            "thu": "Thursday",
+            "fri": "Friday",
+            "sat": "Saturday",
+            "sun": "Sunday",
+        }
+
+        def fmt(h: str) -> str:
+            hh, mm = (int(x) for x in h.split(":"))
+            suffix = "AM" if hh < 12 else "PM"
+            hh = hh % 12 or 12
+            return f"{hh}:{mm:02d} {suffix}" if mm else f"{hh} {suffix}"
+
+        def span_text(key: str) -> str | None:
+            span = self.profile.hours.get(key)
+            return f"{fmt(span[0])} to {fmt(span[1])}" if span else None
+
+        # A question about particular days gets just those days.
+        low = question.lower()
+        keys = list(names)
+        asked = [k for k, day in names.items() if re.search(rf"\b{day.lower()}s?\b", low)]
+        if re.search(r"\bweekends?\b", low):
+            asked += [k for k in ("sat", "sun") if k not in asked]
+        today_key = keys[self.clock().astimezone(ZoneInfo(self.profile.timezone)).weekday()]
+        if re.search(r"\btoday\b|\btonight\b|\bright now\b|\bnow\b", low):
+            asked.append(today_key)
+        if asked:
+            bits = []
+            for k in asked:
+                t = span_text(k)
+                bits.append(f"on {names[k]} we're open {t}" if t else f"we're closed on {names[k]}")
+            text = "; and ".join(bits)
+            return text[0].upper() + text[1:] + "."
+
+        # Otherwise group days with the same hours: "Monday to Friday 8 AM to 5 PM, ...".
+        groups: list[list] = []
+        for k in keys:
+            t = span_text(k)
+            if groups and groups[-1][1] == t:
+                groups[-1][0].append(k)
+            else:
+                groups.append([[k], t])
+        parts = []
+        for ks, t in groups:
+            label = names[ks[0]] if len(ks) == 1 else f"{names[ks[0]]} to {names[ks[-1]]}"
+            parts.append(f"{label} {t}" if t else f"closed {label}")
+        return "Our hours are " + ", ".join(parts) + "."
 
     # ------------------------------------------------------------------ availability
     def check_availability(
@@ -179,6 +246,13 @@ class SecretaryTools:
             raise ToolError("bad_phone", "a 10-digit phone number is required")
         if not name or not name.strip():
             raise ToolError("bad_name", "a name is required")
+        if not plausible_name(name):
+            # A voice agent that heard "it's making a noise" must not book "Making".
+            raise ToolError(
+                "name_unclear",
+                "that does not sound like a name: ask the caller to say and spell their "
+                "first and last name",
+            )
         service = self.store.service(self.tenant_id, service_id)
         if not service or not service["bookable"]:
             raise ToolError("not_bookable", "unknown or unbookable service")
@@ -209,7 +283,7 @@ class SecretaryTools:
                     slot.id,
                     slot.end.strftime("%Y-%m-%dT%H:%M:%SZ"),
                     call_id,
-                    utcnow(),
+                    self.clock().isoformat(),
                 ),
             )
         except sqlite3.IntegrityError as e:  # double booking race: the DB is the referee
@@ -288,13 +362,18 @@ class SecretaryTools:
             )
             return {"transferred": False}
         target = staff[0]
+        live = os.environ.get("FLOW_LIVE_TRANSFER") == "1"
         self.audit.record(
             "tool.transfer_call",
             run_id=call_id,
             to=target["name"],
             emergency=emergency,
-            simulated=True,
+            live=live,
         )
+        if not live:
+            # No phone line can ring anyone yet, so never tell the caller they're being
+            # connected. The caller is told the truth: an urgent callback is flagged.
+            return {"transferred": False, "on_call": target["name"], "mode": "urgent_callback"}
         return {"transferred": True, "to": target["name"]}
 
     def save_lead(
@@ -309,7 +388,7 @@ class SecretaryTools:
         call_id: str | None = None,
         lead_id: int | None = None,
     ) -> int:
-        now = utcnow()
+        now = self.clock().isoformat()
         est = self.profile.avg_job_value if qualified else None
         digits = normalize_phone(phone)
         if lead_id:
@@ -358,13 +437,17 @@ class SecretaryTools:
     ) -> int:
         cur = self.db.execute(
             "INSERT INTO tasks (tenant_id, kind, title, lead_id, created_at) VALUES (?,?,?,?,?)",
-            (self.tenant_id, kind, title, lead_id, utcnow()),
+            (self.tenant_id, kind, title, lead_id, self.clock().isoformat()),
         )
         self.audit.record("tool.create_task", run_id=call_id, kind=kind, task_id=cur.lastrowid)
         return int(cur.lastrowid)
 
     def send_confirmation(self, appointment_id: int, call_id: str | None = None) -> str:
-        """Transactional SMS confirming a booking the caller just asked for (simulated)."""
+        """Transactional SMS confirming a booking the caller just asked for.
+
+        Returns "sent" only when a real provider accepted the text; only then may the
+        caller be told a text is coming. "sent_simulated" means nothing was sent.
+        """
         appt = self.db.one(
             "SELECT * FROM appointments WHERE id = ? AND tenant_id = ?",
             (appointment_id, self.tenant_id),
@@ -377,19 +460,40 @@ class SecretaryTools:
             f"{tenant['name']}: your appointment is confirmed for {slot.label()}. "
             f"Reply C to cancel. Reply STOP to opt out."
         )
-        status = (
-            "sent_simulated"
-            if self.store.automation_enabled(self.tenant_id, "booking_confirmations")
-            else "suppressed"
-        )
+        provider_id = error = None
+        provider = "simulated"
+        if not self.store.automation_enabled(self.tenant_id, "booking_confirmations"):
+            status = "suppressed"
+        else:
+            res = self.sms.send(appt["customer_phone"], body, demo=bool(tenant.get("is_demo")))
+            status, provider_id, error = res.status, res.provider_id, res.error
+            provider = self.sms.name if status != "sent_simulated" else "simulated"
+        now = self.clock().isoformat()
         self.db.execute(
             "INSERT INTO messages (tenant_id, channel, to_addr, body, purpose, status, "
-            "related_appointment_id, created_at) VALUES (?, 'sms', ?, ?, 'transactional', ?, ?, ?)",
-            (self.tenant_id, appt["customer_phone"], body, status, appointment_id, utcnow()),
+            "related_appointment_id, created_at, provider, provider_id, error, updated_at) "
+            "VALUES (?, 'sms', ?, ?, 'transactional', ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.tenant_id,
+                appt["customer_phone"],
+                body,
+                status,
+                appointment_id,
+                now,
+                provider,
+                provider_id,
+                error,
+                now,
+            ),
         )
-        if status == "sent_simulated":
+        if status in ("sent_simulated", "sent"):
             self.store.add_usage(self.tenant_id, "sms", 1, ref=str(appointment_id))
         self.audit.record(
-            "tool.send_confirmation", run_id=call_id, status=status, appointment_id=appointment_id
+            "tool.send_confirmation",
+            run_id=call_id,
+            level="error" if status == "failed" else "info",
+            status=status,
+            appointment_id=appointment_id,
+            error=error,
         )
         return status

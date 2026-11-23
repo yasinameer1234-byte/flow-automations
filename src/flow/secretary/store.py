@@ -13,6 +13,14 @@ from .schema import PACKAGES, PLATFORM_SCHEMA
 
 def init_platform_schema(db: Database) -> None:
     db._conn.executescript(PLATFORM_SCHEMA)
+    # Additive migrations for databases created by earlier versions.
+    cols = {r["name"] for r in db.query("PRAGMA table_info(tenants)")}
+    if "is_demo" not in cols:
+        db.execute("ALTER TABLE tenants ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0")
+    mcols = {r["name"] for r in db.query("PRAGMA table_info(messages)")}
+    for col in ("provider", "provider_id", "error", "updated_at"):
+        if col not in mcols:
+            db.execute(f"ALTER TABLE messages ADD COLUMN {col} TEXT")  # noqa: S608 (fixed names)
 
 
 @dataclass(frozen=True)
@@ -109,7 +117,7 @@ class Store:
         )
 
     def automations(self, tenant_id: str) -> list[dict]:
-        keys = ["ai_secretary", "booking_confirmations"]
+        keys = ["ai_secretary", "booking_confirmations", "revenue_engine"]
         return [{"key": k, "enabled": self.automation_enabled(tenant_id, k)} for k in keys]
 
     # ------------------------------------------------------------------ usage

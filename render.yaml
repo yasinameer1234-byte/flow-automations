@@ -13,6 +13,14 @@ services:
     envVars:
       - key: FLOW_ENV
         value: staging
+      - key: FLOW_TRUSTED_PROXIES
+        value: "*"
+      # Rate limits read the caller's address from the right end of X-Forwarded-For.
+      - key: FLOW_PROXY_HOPS
+        value: "1"
+      # The demo business opens only from expiring links made in /admin.
+      - key: FLOW_DEMO_ACCESS
+        value: invite
       - key: FLOW_DB_PATH
         value: /home/flow/var/flow.db
       - key: FLOW_SECRET_KEY
@@ -22,4 +30,25 @@ services:
       - key: FLOW_DEMO_PASSWORD
         generateValue: true
       - key: RETELL_API_KEY
+        sync: false
+      # The app's public https URL (e.g. https://flow-automations-demo.onrender.com).
+      # Needed to check Twilio webhook signatures.
+      - key: FLOW_PUBLIC_URL
+        sync: false
+      # Optional: "talk to the real voice agent" button on the demo page.
+      - key: FLOW_RETELL_PUBLIC_KEY
+        sync: false
+      - key: FLOW_RETELL_AGENT_NORTHSIDE
+        sync: false
+      # Optional: real SMS. Until all four are set, every text stays simulated, and outside
+      # production only numbers on FLOW_SMS_ALLOWLIST ever get a real text.
+      - key: FLOW_SMS_PROVIDER
+        value: simulated
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
+        sync: false
+      - key: FLOW_SMS_ALLOWLIST
         sync: false
