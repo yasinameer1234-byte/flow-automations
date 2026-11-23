@@ -90,7 +90,8 @@ the allow-list, and demo businesses never text anyone else.
 |---|---|---|
 | `FLOW_DEMO_ACCESS` | `public` locally, `invite` hosted | Who can open the demo business |
 | `FLOW_DEMO_RETENTION_HOURS` | `24` | Browser-demo bookings older than this are deleted |
-| `FLOW_PROXY_HOPS` | `0` (Render: `1`) | Which `X-Forwarded-For` entry is the real caller |
+| `FLOW_CLIENT_IP_HEADER` | unset (Render: `cf-connecting-ip`) | Header the host sets with the real visitor address; wins over `X-Forwarded-For` |
+| `FLOW_PROXY_HOPS` | `0` (Render: `3`) | Fallback: which `X-Forwarded-For` entry (from the right) is the visitor |
 | `FLOW_PUBLIC_URL` | unset | Public URL, used to check Twilio signatures |
 | `FLOW_RETELL_PUBLIC_KEY`, `FLOW_RETELL_AGENT_<SLUG>` | unset | Real voice agent button on the demo page |
 | `FLOW_SMS_PROVIDER`, `TWILIO_*`, `FLOW_SMS_ALLOWLIST` | simulated | Real SMS |

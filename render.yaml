@@ -15,9 +15,14 @@ services:
         value: staging
       - key: FLOW_TRUSTED_PROXIES
         value: "*"
-      # Rate limits read the caller's address from the right end of X-Forwarded-For.
+      # Rate limits key on the real visitor address. Render sits behind Cloudflare, which
+      # sets CF-Connecting-IP and refuses requests that try to supply it (checked 2026-11-23
+      # via /whoami). X-Forwarded-For there is "client, cloudflare, render-internal", so
+      # FLOW_PROXY_HOPS is only the fallback.
+      - key: FLOW_CLIENT_IP_HEADER
+        value: cf-connecting-ip
       - key: FLOW_PROXY_HOPS
-        value: "1"
+        value: "3"
       # The demo business opens only from expiring links made in /admin.
       - key: FLOW_DEMO_ACCESS
         value: invite
