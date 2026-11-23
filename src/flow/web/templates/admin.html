@@ -26,6 +26,20 @@
 </tr>{% endfor %}
 </tbody></table></div>
 
+<h2>Demo links for prospects</h2>
+<div class="panel">
+<p class="small muted">Demo access: <strong>{{ demo_access }}</strong>.
+{% if demo_access == "invite" %}The demo business only opens from a link made here (or for a signed-in admin). Links expire, and demo bookings are deleted after a day.{% else %}Anyone with the URL can use the demo (local development only).{% endif %}
+Your address as this app sees it: <code>{{ seen_ip }}</code> (rate limits use this; check it matches your real address after a deploy).</p>
+{% if demo_link %}<p>New link (copy it now): <input type="text" readonly value="{{ demo_link }}" style="width:100%" data-demo-link onclick="this.select()"></p>{% endif %}
+<form method="post" action="/admin/demo-links" class="inline">
+<input type="hidden" name="csrf" value="{{ user.csrf }}">
+<select name="slug">{% for r in rows if r.t.is_demo %}<option value="{{ r.t.slug }}">{{ r.t.name }}</option>{% endfor %}</select>
+<input type="text" name="label" placeholder="Prospect (e.g. Acme Plumbing)" maxlength="60">
+<label class="small">valid for <input type="number" name="hours" value="72" min="1" max="336" style="width:5em"> hours</label>
+<button type="submit">Create demo link</button>
+</form></div>
+
 <h2>Recent warnings and errors</h2>
 <div class="panel"><table>
 <thead><tr><th>When</th><th>Customer</th><th>Event</th><th>Detail</th></tr></thead>

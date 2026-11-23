@@ -35,6 +35,11 @@ class CallState:
     transferred_to: str | None = None
     task_id: int | None = None
     questions_answered: int = 0
+    answered: list[str] = field(default_factory=list)  # answers already given this call
+    unanswered: int = 0
+    reason_asks: int = 0
+    open_questions: list[str] = field(default_factory=list)  # passed on to the team
+    last_reply: str | None = None
     misunderstood: int = 0
     integration_error: bool = False
     ended: bool = False
@@ -44,7 +49,8 @@ class CallState:
 
     @classmethod
     def from_dict(cls, d: dict) -> CallState:
-        return cls(**d) if d else cls()
+        known = set(cls.__dataclass_fields__)
+        return cls(**{k: v for k, v in (d or {}).items() if k in known})
 
 
 class Receptionist:
@@ -59,6 +65,13 @@ class Receptionist:
         text = (text or "").strip()
         if not text:
             return "Sorry, I didn't catch that. Could you say it again?"
+        if nlu.wants_repeat(text) and s.last_reply and not s.ended:
+            return "Sure. " + s.last_reply
+        reply = self._dispatch(s, text)
+        s.last_reply = reply
+        return reply
+
+    def _dispatch(self, s: CallState, text: str) -> str:
         if (
             s.stage not in ("collect_emergency",)
             and nlu.is_emergency(text, self.t.profile.emergency_keywords)
@@ -91,6 +104,7 @@ class Receptionist:
                 s.service_id, s.reason = service["id"], s.reason or text
             if res["answer"] or not (service or nlu.wants_booking(text)):
                 return self._answer(s, text, res)
+            self._note_question(s, text)
             s.goal = "book"
             return self._ask_or_continue(
                 s,
@@ -118,11 +132,28 @@ class Receptionist:
         )
 
     def _stage_ask_reason(self, s, text):
+        if nlu.is_done(text):
+            s.ended = True
+            s.stage = "done"
+            return f"No problem. Thanks for calling {self.business}. Have a great day!"
         service = self.t.match_service(text)
+        self._absorb(s, text)
+        if nlu.is_question(text):
+            # "How much is it to fix a leak?" is both a question and the reason.
+            said = self._qa(s, text)
+            if service:
+                s.service_id, s.reason = service["id"], text
+                return self._ask_or_continue(s, prefix=said + " ")
+            s.reason_asks += 1
+            if s.reason_asks == 1:
+                return f"{said} And what do you need help with today?"
+            # Asked twice already: don't keep demanding a reason. Book a general visit;
+            # the technician learns the details on site.
+            s.service_id = self.t.default_service()["id"]
+            return self._ask_or_continue(s, prefix=said + " I can book a general service visit. ")
         s.reason = text
         if service:
             s.service_id = service["id"]
-        self._absorb(s, text)
         return self._ask_or_continue(s)
 
     def _side_track(self, s: CallState, text: str, reask: str) -> str | None:
@@ -132,19 +163,19 @@ class Receptionist:
             s.stage = "done"
             return f"No problem. Thanks for calling {self.business}. Have a great day!"
         if nlu.is_question(text):
-            res = self.t.answer_question(text, call_id=self.call_id)
-            if res["answer"]:
-                s.questions_answered += 1
-                return f"{res['answer']} {reask}"
-            return f"I don't have an approved answer for that, so I won't guess. {reask}"
+            return f"{self._qa(s, text)} {reask}"
         return None
 
     def _stage_ask_name(self, s, text):
         name = nlu.extract_name(text, expecting=True)
         if not name:
-            side = self._side_track(s, text, "To book, can I get your first and last name?")
+            side = self._side_track(s, text, "Now, can I get your first and last name?")
             if side:
                 return side
+            had_phone = bool(s.phone)
+            self._absorb(s, text, name=False)
+            if s.phone and not had_phone:  # they gave the number first: keep it
+                return "Thanks, I've got your number. And what's your first and last name?"
             s.misunderstood += 1
             if s.misunderstood >= 3:
                 s.ended = True
@@ -156,6 +187,8 @@ class Receptionist:
             return "Sorry, I didn't catch your name. Could you say your first and last name?"
         s.name = name
         self._absorb(s, text, name=False)
+        if nlu.is_question(text):  # "Priya Sharma, do you work weekends?"
+            return self._ask_or_continue(s, prefix=self._qa(s, text) + " ")
         return self._ask_or_continue(s)
 
     def _stage_ask_phone(self, s, text):
@@ -206,14 +239,17 @@ class Receptionist:
             return f"Thanks for calling {self.business}. Have a great day!"
         if nlu.wants_human(text):
             return self._transfer(s, text)
+        if nlu.is_question(text):
+            service = self.t.match_service(text)
+            if service and s.appointment_id is None:
+                s.service_id, s.reason = service["id"], s.reason or text
+            return self._answer(s, text)
         if s.appointment_id is None and (nlu.wants_booking(text) or nlu.is_yes(text)):
             s.goal = "book"
             service = self.t.match_service(text)
             if service:
                 s.service_id = service["id"]
             return self._ask_or_continue(s)
-        if nlu.is_question(text):
-            return self._answer(s, text)
         s.ended = True
         return f"Thanks for calling {self.business}. Have a great day!"
 
@@ -289,7 +325,7 @@ class Receptionist:
         s.lead_id = self.t.save_lead(
             name=s.name,
             phone=s.phone,
-            reason=s.reason,
+            reason=self._reason(s),
             service_id=s.service_id,
             status="new",
             qualified=True,
@@ -360,18 +396,61 @@ class Receptionist:
         s.stage = "ask_time"
         return f"I see your appointment on {appt['label']}. What day would you like to move it to?"
 
+    def _qa(self, s: CallState, text: str, res: dict | None = None) -> str:
+        """One approved answer, worded so a repeated question never gets a repeated speech."""
+        res = res or self.t.answer_question(text, call_id=self.call_id)
+        answer = res["answer"]
+        if answer:
+            times = s.answered.count(answer)
+            s.answered.append(answer)
+            if times == 0:
+                s.questions_answered += 1
+                return answer
+            if times == 1:
+                short = answer.split(". ")[0].rstrip(".") + "."  # the first sentence only
+                return "Like I mentioned, " + short[:1].lower() + short[1:]
+            self._note_question(s, text)
+            return (
+                "That's everything I have on that. I've noted your question so the "
+                "team can go over it with you."
+            )
+        self._note_question(s, text)
+        s.unanswered += 1
+        if s.unanswered == 1:
+            return "I don't have an approved answer for that, so I won't guess."
+        return "I don't have that one either, so I've noted it for the team."
+
+    def _note_question(self, s: CallState, text: str) -> None:
+        q = text.strip()[:120]
+        if q and q not in s.open_questions:
+            s.open_questions.append(q)
+
     def _answer(self, s: CallState, text: str, res: dict | None = None) -> str:
         res = res or self.t.answer_question(text, call_id=self.call_id)
         s.stage = "anything_else"
+        said = self._qa(s, text, res)
         if res["answer"]:
-            s.questions_answered += 1
-            return res["answer"] + " Would you like to book a visit, or is there anything else?"
+            if s.answered.count(res["answer"]) >= 4 and not (s.name and s.phone):
+                s.goal = "callback"
+                s.reason = s.reason or text
+                return self._ask_or_continue(
+                    s, prefix="Let me have the team call you back so they can go over it. "
+                )
+            if s.answered.count(res["answer"]) >= 3:
+                return said + " Would you like a callback, or shall I book a visit?"
+            return said + " Would you like to book a visit, or is there anything else?"
         s.goal = s.goal or "callback"
         s.reason = s.reason or text
+        if s.unanswered >= 3 and not (s.name and s.phone):
+            s.goal = "callback"
+            return self._ask_or_continue(
+                s, prefix="Let me have the team call you back with answers to your questions. "
+            )
+        if s.unanswered >= 2:
+            return said + " Would you like a callback, or shall I book a visit?"
         return (
-            "I don't have an approved answer for that, and I don't want to guess. I can "
-            "have someone from the team call you back, or book you a visit. Which would "
-            "you prefer?"
+            said + " I can have someone from the team call you back, or book you a "
+            "visit. Which would you prefer?"
         )
 
     def _emergency(self, s: CallState, text: str) -> str:
@@ -421,6 +500,8 @@ class Receptionist:
         title = f"{'URGENT: ' if urgent else ''}Call back {s.name} at {format_phone(s.phone)}"
         if s.reason:
             title += f": {s.reason[:80]}"
+        if s.open_questions:
+            title += " | Asked: " + "; ".join(s.open_questions)[:160]
         s.task_id = self.t.create_task(kind, title, s.lead_id, call_id=self.call_id)
         s.stage = "anything_else"
         when = "as an urgent callback" if urgent else "as soon as they can"
@@ -474,13 +555,20 @@ class Receptionist:
             s.lead_id = self.t.save_lead(
                 name=s.name,
                 phone=s.phone,
-                reason=s.reason,
+                reason=self._reason(s),
                 service_id=s.service_id,
                 status=status,
                 qualified=qualified,
                 call_id=self.call_id,
                 lead_id=s.lead_id,
             )
+
+    def _reason(self, s: CallState) -> str | None:
+        """The caller's reason, plus any questions the assistant could not fully answer."""
+        if not s.open_questions:
+            return s.reason
+        asked = "Asked: " + "; ".join(s.open_questions)
+        return f"{s.reason} | {asked}" if s.reason else asked
 
     def _service_name(self, s: CallState) -> str:
         svc = self.t.store.service(self.t.tenant_id, s.service_id)

@@ -13,7 +13,8 @@ Rules checked before every single message (see ``_blocked``):
 - local quiet hours (default 9 AM to 8 PM, Monday to Saturday) - otherwise it waits;
 - at most one follow-up per number per 20 hours across all playbooks.
 
-All sending is simulated: messages are written to the outbox with status ``sent_simulated``.
+Sending goes through ``flow.integrations.sms``: simulated (status ``sent_simulated``) unless
+Twilio is configured, and then only to allow-listed numbers outside production.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from zoneinfo import ZoneInfo
 
 from ..core.audit import AuditLog
 from ..core.db import Database
+from ..integrations.sms import sms_from_env
 from ..secretary.store import Store
 from ..secretary.tools import format_phone, normalize_phone
 from .playbooks import PLAYBOOKS, Playbook, render
@@ -102,7 +104,8 @@ def _dt(s: str) -> datetime:
 
 
 class RevenueEngine:
-    def __init__(self, db: Database, store: Store, clock=None) -> None:
+    def __init__(self, db: Database, store: Store, clock=None, sms=None) -> None:
+        self.sms = sms or sms_from_env()
         self.db = db
         self.store = store
         self.clock = clock or (lambda: datetime.now(UTC))
@@ -220,12 +223,13 @@ class RevenueEngine:
             )
             self._stop_phone(tenant_id, phone, "opted_out")
             name = self.store.tenant(tenant_id)["name"]
-            self._outbox(
-                tenant_id,
-                phone,
-                f"{name}: you're unsubscribed and won't get more messages from us.",
-                "transactional",
-            )
+            if not self.sms.real:  # Twilio already confirms STOP itself and blocks our sends
+                self._outbox(
+                    tenant_id,
+                    phone,
+                    f"{name}: you're unsubscribed and won't get more messages from us.",
+                    "transactional",
+                )
             audit.record("revenue.opt_out", phone_last4=phone[-4:])
             return {"action": "opted_out"}
         active = self.db.one(
@@ -549,12 +553,33 @@ class RevenueEngine:
         return sent, waiting
 
     def _outbox(self, tenant_id: str, phone: str, body: str, purpose: str) -> int:
+        tenant = self.store.tenant(tenant_id) or {}
+        res = self.sms.send(phone, body, demo=bool(tenant.get("is_demo")))
+        provider = self.sms.name if res.status != "sent_simulated" else "simulated"
+        now = _iso(self.clock())
         cur = self.db.execute(
-            "INSERT INTO messages (tenant_id, channel, to_addr, body, purpose, status, created_at)"
-            " VALUES (?, 'sms', ?, ?, ?, 'sent_simulated', ?)",
-            (tenant_id, phone, body, purpose, _iso(self.clock())),
+            "INSERT INTO messages (tenant_id, channel, to_addr, body, purpose, status, created_at,"
+            " provider, provider_id, error, updated_at)"
+            " VALUES (?, 'sms', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                tenant_id,
+                phone,
+                body,
+                purpose,
+                res.status,
+                now,
+                provider,
+                res.provider_id,
+                res.error,
+                now,
+            ),
         )
-        self.store.add_usage(tenant_id, "sms", 1, ref=f"msg:{cur.lastrowid}", when=self.clock())
+        if res.status != "failed":
+            self.store.add_usage(tenant_id, "sms", 1, ref=f"msg:{cur.lastrowid}", when=self.clock())
+        else:
+            AuditLog(self.db, tenant_id).record(
+                "sms.failed", level="error", message_id=cur.lastrowid, error=res.error
+            )
         return int(cur.lastrowid)
 
     # ------------------------------------------------------------------ results

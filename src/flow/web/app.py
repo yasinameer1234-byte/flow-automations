@@ -47,6 +47,20 @@ class WebContext:
     clock: object
 
 
+# Browser-demo calls older than a cutoff, children first. Each takes (tenant_id, cutoff).
+_PURGE_DEMO_SQL = (
+    "DELETE FROM appointments WHERE source_call_id IN (SELECT id FROM calls WHERE "
+    "tenant_id = ? AND channel = 'browser_demo' AND started_at < ?)",
+    "DELETE FROM tasks WHERE lead_id IN (SELECT id FROM leads WHERE source_call_id IN "
+    "(SELECT id FROM calls WHERE tenant_id = ? AND channel = 'browser_demo' AND started_at < ?))",
+    "DELETE FROM leads WHERE source_call_id IN (SELECT id FROM calls WHERE "
+    "tenant_id = ? AND channel = 'browser_demo' AND started_at < ?)",
+    "DELETE FROM call_turns WHERE call_id IN (SELECT id FROM calls WHERE "
+    "tenant_id = ? AND channel = 'browser_demo' AND started_at < ?)",
+    "DELETE FROM calls WHERE tenant_id = ? AND channel = 'browser_demo' AND started_at < ?",
+)
+
+
 def _fmt_money(v) -> str:
     return f"${v:,.0f}" if v is not None else "n/a"
 
@@ -132,8 +146,27 @@ def create_web_app(
     demo_daily_limit = RateLimiter(int(os.environ.get("FLOW_DEMO_CALLS_PER_DAY", "300")), 86400)
     app.state.limits = (login_email_limit, login_ip_limit, demo_call_limit, demo_daily_limit)
 
+    # Behind a proxy (Render), the caller's address is the entry that the LAST trusted proxy
+    # appended to X-Forwarded-For: FLOW_PROXY_HOPS entries from the right. The left-most
+    # entry is whatever the caller typed, so trusting it would let anyone dodge the limits.
+    proxy_hops = int(os.environ.get("FLOW_PROXY_HOPS", "0"))
+
     def client_ip(request: Request) -> str:
-        return request.client.host if request.client else "unknown"
+        if proxy_hops > 0:
+            hops = [h.strip() for h in request.headers.get("x-forwarded-for", "").split(",")]
+            hops = [h for h in hops if h]
+            if len(hops) >= proxy_hops:
+                return hops[-proxy_hops]
+        peer = request.scope.get("client")
+        return peer[0] if peer else "unknown"
+
+    # ------------------------------------------------------------------ demo access
+    # "public": anyone with the URL can try the demo business (local development).
+    # "invite": hosted default. The page needs a signed, expiring link made in /admin, or a
+    # signed-in admin / owner of that demo business. Real clients never have a demo page.
+    demo_access = os.environ.get("FLOW_DEMO_ACCESS") or ("public" if env == "local" else "invite")
+    demo_retention_hours = float(os.environ.get("FLOW_DEMO_RETENTION_HOURS", "24"))
+    DEMO_COOKIE = "flow_demo"
 
     # ------------------------------------------------------------------ auth helpers
     def current_user(request: Request) -> dict | None:
@@ -406,7 +439,40 @@ def create_web_app(
         mrr = sum(
             PACKAGES[r["t"]["package"]]["monthly_cad"] for r in rows if r["t"]["status"] == "active"
         )
-        return render(request, "admin.html", user=user, rows=rows, errors=errors, mrr=mrr)
+        return render(
+            request,
+            "admin.html",
+            user=user,
+            rows=rows,
+            errors=errors,
+            mrr=mrr,
+            demo_access=demo_access,
+            seen_ip=client_ip(request),
+            demo_link=request.query_params.get("demo_link"),
+        )
+
+    @app.post("/admin/demo-links", include_in_schema=False)
+    def create_demo_link(
+        request: Request,
+        slug: str = Form(...),
+        hours: float = Form(72),
+        label: str = Form(""),
+        csrf: str = Form(""),
+        user: dict = Depends(require_admin),
+    ):
+        check_csrf(user, csrf)
+        t = store.tenant_by_slug(slug)
+        if not t or not t["is_demo"]:
+            raise HTTPException(404, "demo links are only for demo businesses")
+        hours = min(max(hours, 1), 24 * 14)
+        token = ctx.signer.demo_link_token(slug, hours, label)
+        AuditLog(db, t["id"]).record(
+            "demo.link_created", actor=f"user:{user['email']}", hours=hours, label=label[:60]
+        )
+        from urllib.parse import quote
+
+        url = f"{str(request.base_url).rstrip('/')}/demo/{slug}?k={quote(token)}"
+        return RedirectResponse(f"/admin?demo_link={quote(url)}", 303)
 
     @app.post("/admin/tenants/{tenant_id}/automations/{key}", include_in_schema=False)
     def toggle_automation(
@@ -430,17 +496,56 @@ def create_web_app(
         return RedirectResponse("/admin", 303)
 
     # ------------------------------------------------------------------ browser call demo
+    def demo_allowed(request: Request, t: dict, token: str | None = None) -> bool:
+        if demo_access == "public":
+            return True
+        user = current_user(request)
+        if user and (user["role"] == "platform_admin" or user["tenant_id"] == t["id"]):
+            return True
+        token = token or request.cookies.get(DEMO_COOKIE)
+        return ctx.signer.demo_link_loads(token, t["slug"]) is not None
+
     @app.get("/demo/{slug}", response_class=HTMLResponse, include_in_schema=False)
-    def demo_page(request: Request, slug: str):
+    def demo_page(request: Request, slug: str, k: str | None = None):
         t = store.tenant_by_slug(slug)
         if not t or not t["is_demo"]:  # real clients never get a public demo page
             raise HTTPException(404, "unknown business")
-        return render(request, "call.html", tenant=t, user=current_user(request))
+        if not demo_allowed(request, t, token=k):
+            return HTMLResponse(
+                "<!doctype html><title>Demo link needed</title><body style='font-family:"
+                "system-ui;max-width:32rem;margin:4rem auto;padding:0 1rem'><h1>This demo "
+                "needs an invite link</h1><p>The link may have expired. Ask Flow Automations "
+                "for a new one.</p></body>",
+                status_code=403,
+            )
+        resp = render(request, "call.html", tenant=t, user=current_user(request))
+        link = ctx.signer.demo_link_loads(k, slug) if k else None
+        if link:  # remember the invite so the page's own API calls are allowed
+            resp.set_cookie(
+                DEMO_COOKIE,
+                k,
+                max_age=max(60, int(link["exp"] - datetime.now(UTC).timestamp())),
+                httponly=True,
+                samesite="lax",
+                secure=env != "local",
+            )
+        return resp
+
+    def purge_old_demo_calls(tenant_id: str) -> None:
+        """Browser-demo bookings expire, so strangers can't fill the demo calendar for good."""
+        cutoff = datetime.fromtimestamp(
+            clock().timestamp() - demo_retention_hours * 3600, UTC
+        ).isoformat()
+        args = (tenant_id, cutoff)
+        for sql in _PURGE_DEMO_SQL:
+            db.execute(sql, args)
 
     def _demo_tenant(slug: str, request: Request | None = None, limiter=None) -> str:
         t = store.tenant_by_slug(slug)
         if not t or not t["is_demo"]:
             raise HTTPException(404, "unknown business")
+        if request is not None and not demo_allowed(request, t):
+            raise HTTPException(403, "This demo needs an invite link.")
         if request is not None and limiter is not None:
             if not limiter.hit(f"{client_ip(request)}|{slug}"):
                 raise HTTPException(429, "Too many demo requests. Please try again later.")
@@ -449,6 +554,7 @@ def create_web_app(
     @app.post("/api/demo/{slug}/calls")
     def demo_start(slug: str, request: Request):
         tid = _demo_tenant(slug, request, demo_call_limit)
+        purge_old_demo_calls(tid)
         if not demo_daily_limit.hit(slug):
             raise HTTPException(429, "The demo line is busy today. Please try again tomorrow.")
         try:
@@ -465,9 +571,9 @@ def create_web_app(
             raise HTTPException(409, str(e)) from e
 
     @app.post("/api/demo/{slug}/calls/{call_id}/end")
-    def demo_end(slug: str, call_id: str):
+    def demo_end(slug: str, call_id: str, request: Request):
         try:
-            c = ctx.calls.end(_demo_tenant(slug), call_id)
+            c = ctx.calls.end(_demo_tenant(slug, request), call_id)
         except CallError as e:
             raise HTTPException(404, str(e)) from e
         return {
@@ -476,6 +582,54 @@ def create_web_app(
             "summary": c["summary"],
             "billed_minutes": c["billed_minutes"],
         }
+
+    # ------------------------------------------------------------------ SMS provider webhooks
+    # Twilio calls these. Both check Twilio's signature against FLOW_PUBLIC_URL + the path,
+    # because behind a proxy the URL the app sees is not the one Twilio signed.
+    async def twilio_form(request: Request) -> dict:
+        sender = revenue.sms
+        if sender.name != "twilio":
+            raise HTTPException(503, "Twilio is not configured")
+        params = {k: str(v) for k, v in (await request.form()).items()}
+        public = os.environ.get("FLOW_PUBLIC_URL", "").rstrip("/")
+        url = (public + request.url.path) if public else str(request.url)
+        if request.url.query:
+            url += "?" + request.url.query
+        if not sender.valid_signature(url, params, request.headers.get("x-twilio-signature")):
+            raise HTTPException(403, "bad signature")
+        return params
+
+    @app.post("/sms/twilio/status", include_in_schema=False)
+    async def twilio_status(request: Request):
+        """Delivery receipts: the only proof a text actually reached the phone."""
+        p = await twilio_form(request)
+        status = {"delivered": "delivered", "undelivered": "undelivered", "failed": "failed"}.get(
+            p.get("MessageStatus", ""), None
+        )
+        if status and p.get("MessageSid"):
+            err = p.get("ErrorCode")
+            db.execute(
+                "UPDATE messages SET status = ?, error = COALESCE(?, error), updated_at = ? "
+                "WHERE provider = 'twilio' AND provider_id = ?",
+                (
+                    status,
+                    f"Twilio error {err}" if err else None,
+                    clock().isoformat(),
+                    p["MessageSid"],
+                ),
+            )
+        return Response(status_code=204)
+
+    @app.post("/sms/twilio/inbound/{slug}", include_in_schema=False)
+    async def twilio_inbound(slug: str, request: Request):
+        """A customer texts the business: STOP/START, C to cancel, or a reply to a follow-up."""
+        p = await twilio_form(request)
+        t = store.tenant_by_slug(slug)
+        if not t or t["status"] != "active":
+            raise HTTPException(404, "unknown business")
+        revenue.inbound_sms(t["id"], p.get("From", ""), p.get("Body", ""))
+        # Empty TwiML: any reply text is sent by our own outbox, not by Twilio.
+        return Response("<Response/>", media_type="application/xml")
 
     # ------------------------------------------------------------------ voice agent tools
     # Shaped for Retell custom functions: POST {"name", "args", "call"}. Auth by tenant key.

@@ -133,8 +133,13 @@ CREATE TABLE IF NOT EXISTS messages (
     to_addr TEXT NOT NULL,
     body TEXT NOT NULL,
     purpose TEXT NOT NULL,              -- transactional | marketing
-    status TEXT NOT NULL,               -- sent_simulated | suppressed | failed
+    -- sent_simulated | suppressed | sent (provider accepted) | delivered | undelivered | failed
+    status TEXT NOT NULL,
     related_appointment_id INTEGER,
+    provider TEXT,                      -- simulated | twilio
+    provider_id TEXT,                   -- the provider's message id, for delivery receipts
+    error TEXT,
+    updated_at TEXT,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS usage_ledger (

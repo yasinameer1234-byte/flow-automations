@@ -229,6 +229,58 @@ _COMMON = {
     "morning",
     "afternoon",
     "evening",
+    # timing and choice words a caller says while being asked something else
+    "first",
+    "second",
+    "third",
+    "last",
+    "next",
+    "week",
+    "earliest",
+    "soonest",
+    "asap",
+    "anytime",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+    "noon",
+    "fine",
+    "alright",
+    "right",
+    "cold",
+    "hot",
+    "freezing",
+    "wet",
+    "dead",
+    "out",
+    "off",
+    "down",
+    "loud",
+    "bad",
+    "worse",
+    "number",
+    "phone",
+    "name",
+    "please",
+    "maybe",
+    "nothing",
+    "hmm",
+    "pardon",
+    "huh",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
 }
 
 
@@ -296,11 +348,33 @@ _WEAK_NAME = re.compile(
     r"\b(?:this is|it's|it is|i'm|i am)\s+([a-z][a-z'\-]+(?:\s+[a-z][a-z'\-]+)?)", re.I
 )
 _FILLER = {"um", "uh", "yeah", "sure", "it's", "its", "and", "please", "oh", "well", "so"}
+# Words a caller often says before giving their name: "fine. Priya", "hi yes, Priya Sharma".
+_LEAD_IN = re.compile(
+    r"^\s*(?:(?:hi|hello|hey|yes|yeah|yep|sure|ok|okay|fine|alright|well|um|uh|oh|so|right|"
+    r"of course|no problem|thanks|thank you)\b[\s,.!]*)+",
+    re.I,
+)
+_CLAUSE = re.compile(r"[,.;!?]| and | but ", re.I)
+
+
+# Adverbs a caller says where a name could go. A blanket "-ly" rule rejected Emily,
+# Kelly and Holly, so they are listed instead.
+_ADVERBS = {
+    "really", "actually", "basically", "probably", "honestly", "literally", "recently",
+    "currently", "finally", "quickly", "usually", "definitely", "only", "early", "likely",
+    "totally", "exactly", "apparently", "suddenly", "constantly", "possibly", "hopefully",
+    "seriously", "obviously", "completely", "absolutely", "certainly", "unfortunately",
+}  # fmt: skip
+# Real names ending in "-ing" that the "-ing means a verb" rule would otherwise drop.
+_ING_NAMES = {"sterling", "manning", "fleming", "browning", "harding", "golding", "channing"}
 
 
 def _looks_like_word(w: str) -> bool:
     lw = w.lower()
-    return lw in _NOT_NAME or lw in _COMMON or lw.endswith("ing") or lw.endswith("ly")
+    if lw in _NOT_NAME or lw in _COMMON or lw in _ADVERBS:
+        return True
+    # "making", "leaking", "calling" are verbs; short ones (Ming, Jing, King) are names.
+    return lw.endswith("ing") and len(lw) >= 6 and lw not in _ING_NAMES
 
 
 _INTRO_NAME = re.compile(
@@ -310,24 +384,76 @@ _INTRO_NAME = re.compile(
 )
 
 
-def extract_name(t: str, expecting: bool = False) -> str | None:
-    m = _STRONG_NAME.search(t) or _INTRO_NAME.search(t)
-    if not m and expecting:
-        m = _WEAK_NAME.search(t)
-    if m:
-        candidate = m.group(1)
-    elif expecting and len(t.split()) <= 4 and not is_question(t):
-        candidate = t
-    else:
-        return None
+def _clean_name(candidate: str) -> str | None:
     candidate = re.sub(r"[^a-zA-Z'\-\s]", " ", candidate)
     words = [w for w in candidate.split() if w.lower() not in _FILLER]
     if not words or len(words) > 3 or _looks_like_word(words[0]):
         return None
     words = [w for w in words if not _looks_like_word(w)][:2]
-    if not words:
+    if not words or any(len(w) < 2 and not w.isupper() for w in words):
         return None
-    return " ".join(w[:1].upper() + w[1:].lower() for w in words)
+    return " ".join(_cap(w) for w in words)
+
+
+def _cap(word: str) -> str:
+    """Priya, Al-Rashid, O'Brien."""
+    return re.sub(r"(^|[-'])([a-z])", lambda m: m.group(1) + m.group(2).upper(), word.lower())
+
+
+# A name the caller volunteers before being asked: "Hi, it's Priya, my furnace ...".
+# Without a question to anchor it we need two signals: the word is capitalised (speech
+# recognition and typists capitalise names) and the phrase ends right after it.
+_VOLUNTEERED = re.compile(
+    r"\b(?i:this is|it's|it is|i'm|i am)\s+([A-Z][a-z'\-]+(?:\s+[A-Z][a-z'\-]+)?)"
+    r"\s*(?:[,.;!?]|$|\s+(?i:and|here|calling|speaking|from)\b)"
+)
+
+
+def extract_name(t: str, expecting: bool = False) -> str | None:
+    """The caller's name, or None. ``expecting`` is True when we just asked for it."""
+    m = _STRONG_NAME.search(t) or _INTRO_NAME.search(t)
+    if m:
+        return _clean_name(m.group(1))
+    m = _VOLUNTEERED.search(t)
+    if m:
+        name = _clean_name(m.group(1))
+        if name:
+            return name
+    if not expecting:
+        return None
+    m = _WEAK_NAME.search(t)
+    if m:
+        return _clean_name(m.group(1))
+    # Asked for a name: try the whole reply, then its first clause ("Priya Sharma, do you
+    # work weekends?"), after dropping lead-ins like "fine." or "hi yes,".
+    body = _LEAD_IN.sub("", t).strip()
+    first = _CLAUSE.split(body, maxsplit=1)[0].strip()
+    for cand in (body, first):
+        if cand and len(cand.split()) <= 4 and not is_question(cand):
+            name = _clean_name(cand)
+            if name:
+                return name
+    return None
+
+
+def plausible_name(name: str) -> bool:
+    """False for values that are clearly not a person's name ("Making", "First", "416...")."""
+    words = re.findall(r"[^\s]+", name or "")
+    if not words or len(words) > 4 or re.search(r"\d", name):
+        return False
+    return not any(_looks_like_word(w.strip(".,'")) for w in words)
+
+
+_REPEAT = re.compile(
+    r"^\s*(?:what|pardon|pardon me|sorry|huh|come again|say that again|say again|"
+    r"can you repeat(?: that)?|could you repeat(?: that)?|repeat that|what did you say)"
+    r"\s*[?.!]*\s*$",
+    re.I,
+)
+
+
+def wants_repeat(t: str) -> bool:
+    return bool(_REPEAT.match(t))
 
 
 def extract_day(t: str, today: date) -> date | None:
