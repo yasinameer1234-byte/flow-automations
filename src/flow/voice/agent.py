@@ -245,8 +245,26 @@ class VoiceAgents:
             role = m.get("role")
             if role in ("agent", "user"):
                 out.append({"role": role, "content": m.get("content", "")})
+            elif role == "tool_call_invocation" and m.get("name") == "end_call":
+                out.append({"role": "end"})
             elif role == "tool_call_invocation":
                 out.append({"role": "tool", "name": m.get("name"), "args": m.get("arguments")})
             elif role == "tool_call_result":
                 out.append({"role": "tool_result", "content": str(m.get("content", ""))[:500]})
-        return {"chat_id": chat_id, "messages": out}
+        ended = any(m["role"] == "end" for m in out)
+        return {"chat_id": chat_id, "messages": out, "ended": ended}
+
+    def sync_prompt(self, tenant: dict, trade: str, area: str = "Toronto and the GTA") -> str:
+        """Push the current prompt and tools to the agent's Retell LLM (it may predate them)."""
+        agent_id = self.ensure(tenant, trade, area)
+        agent = self.request("GET", f"/get-agent/{urllib.parse.quote(agent_id)}", None, self.key)
+        llm_id = ((agent or {}).get("response_engine") or {}).get("llm_id")
+        if not llm_id or not self.base_url():
+            raise RetellError("can't update the agent's prompt (no LLM id or public URL)")
+        body = retell_setup.llm_payload(
+            self.base_url(), tenant["slug"], trade, tenant["name"], area
+        )
+        body.pop("model", None)  # keep whatever model the agent already runs
+        self.request("PATCH", f"/update-retell-llm/{urllib.parse.quote(llm_id)}", body, self.key)
+        self.status[tenant["slug"]] += ", prompt synced"
+        return llm_id
