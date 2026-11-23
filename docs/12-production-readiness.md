@@ -61,7 +61,9 @@ USD $7–25/month), which needs your approval first.
    The demo page then shows "Talk to the real voice agent". It's a free web call. Each call is
    capped at 10 minutes.
 
-## What's needed for real SMS (Twilio trial, decision pending)
+## Real SMS (Twilio): off until the first paying client
+Decision 2026-11-23: no Twilio trial for now; SMS stays simulated and callers are never
+told a text is coming. When a client pays, the steps are:
 A Twilio trial account needs no card and comes with trial credit. It can text only phone
 numbers you verify in Twilio, and every message starts with "Sent from your Twilio trial
 account". The trial also includes one Twilio number, paid from the trial credit. That needs
